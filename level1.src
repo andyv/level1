@@ -1,0 +1,3038 @@
+
+// Z80 power-on entry point
+
+0000 f3               di
+0001 21 ff 00         ld hl,0x00ff
+0004 c3 8e 01         jp 0x018e
+0007 00               nop
+
+// RST 0x08.  Parsing subroutine.  The rst is followed by a target
+// character and a positive byte offset.  Advances DE to the next
+// non-space character.  If this character is not equal to the target
+// character returns to the return address plus the offset.  If equal,
+// return to the byte after the offset.
+
+0008 e3               ex (sp),hl
+0009 ef               rst 0x28
+000a be               cp (hl)
+000b c3 98 00         jp 0x0098
+
+// Print a carriage return
+
+000e 3e 0d            ld a,0x0d
+
+// RST 0x10  Print character to cassette or screen
+
+0010 d9               exx
+0011 08               ex af,af'
+0012 cd f0 0f         call 0x0ff0     // See if cassette motor is running
+0015 c3 cb 0a         jp 0x0acb
+
+// RST 0x18   Parse an expression, possibly relational
+
+0018 cd ad 07         call 0x07ad     // Parse an expression
+001b 00               nop
+001c c3 5d 07         jp 0x075d       // parse an optional relational
+001f 00               nop
+
+// RST 0x20  Compare HL to DE, status in flags
+
+0020 7c               ld a,h
+0021 ba               cp d
+0022 c0               ret nz
+0023 7d               ld a,l
+0024 bb               cp e
+0025 c9               ret
+0026 00               nop
+0027 00               nop
+
+// RST 0x28  Skip spaces pointed to by DE, leaves DE pointing to
+// the next non-space character.  A contains the non-space character.
+
+0028 1a               ld a,(de)
+0029 fe 20            cp ' '
+002b c0               ret nz
+002c 13               inc de
+002d c3 28 00         jp 0x0028
+
+// RST 0x30  This is a "continue execution" call.
+
+0030 f1               pop af              // Pop return address
+0031 cd b3 08         call 0x08b3
+0034 c3 c9 08         jp 0x08c9
+0037 00               nop
+
+// RST 0x38 Parse a variable reference.  Returns with carry set if the
+// variable name is not valid.  For valid variables returns with HL
+// pointing to the variable.  Variables are A-Z and A(x).
+
+0038 ef               rst 0x28
+0039 d6 41            sub 'A'
+003b d8               ret c
+003c fe 1a            cp 26         // 26 letters in alphabet
+003e 3f               ccf
+003f d8               ret c
+0040 13               inc de
+0041 a7               and a
+0042 20 3e            jr nz,0x0082
+0044 cf 28 3a         rst 0x08, '(', target 0x0081
+
+0047 cd 0b 08         call 0x080b    // Compute subscript of A()
+004a 23               inc hl
+004b 29               add hl,hl
+004c 29               add hl,hl
+004d da a2 01         jp c,0x01a2    // Throw HOW
+0050 e5               push hl
+0051 cf 29 35         rst 0x08, ')', target 0x0089
+
+0054 e1               pop hl
+0055 d5               push de
+0056 e5               push hl
+0057 2a 6a 40         ld hl,(0x406a)
+005a ed 5b 6c 40      ld de,(0x406c)
+005e af               xor a
+005f ed 52            sbc hl,de
+0061 d1               pop de
+0062 e7               rst 0x20
+0063 c3 76 00         jp 0x0076      // Skip the NMI code
+
+// Non-maskable interrupt entry point
+
+0066 f3               di
+0067 31 00 42         ld sp,0x4200
+006a af               xor a
+006b 32 90 40         ld (0x4090),a
+006e d3 ff            out (0xff),a
+0070 3e 0c            ld a,0x0c
+0072 d7               rst 0x10
+0073 c3 c9 01         jp 0x01c9
+
+// Resume array bounds checking
+
+0076 da f5 08         jp c,0x08f5         // Throw SORRY
+0079 2a 6a 40         ld hl,(0x406a)      // Compute array address
+007c ed 52            sbc hl,de
+007e d1               pop de
+007f af               xor a
+0080 c9               ret
+
+// Not a left paren in variable name
+
+0081 af               xor a
+0082 26 40            ld h,0x40
+0084 17               rla
+0085 17               rla
+0086 6f               ld l,a
+0087 af               xor a
+0088 c9               ret
+
+0089 c3 c9 08         jp 0x08c9   // Throw WHAT
+
+// Return with carry set if character pointed to by DE is not a digit.
+// If a digit, returns with A as the decimal value of the digit.
+
+008c 1a               ld a,(de)
+008d fe 30            cp '0'
+008f d8               ret c
+0090 fe 3a            cp '9' + 1
+0092 3f               ccf
+0093 d8               ret c
+0094 13               inc de
+0095 e6 0f            and 0x0f
+0097 c9               ret
+
+// Continuation of RST 0x08
+
+0098 23               inc hl          // Point to offset
+0099 28 07            jr z,0x00a2     // Got match, consume char at DE
+009b c5               push bc         // Take alternate branch
+009c 4e               ld c,(hl)       // BC = offset
+009d 06 00            ld b,0x00
+009f 09               add hl,bc       // Branch address
+00a0 c1               pop bc          // Restore BC
+00a1 1b               dec de          // Do not consume char at DE
+00a2 13               inc de
+00a3 23               inc hl
+00a4 e3               ex (sp),hl      // return to HL
+00a5 c9               ret
+
+
+// Parse floating point constant
+
+// Bit 0 of B is 'Seen decimal point'
+// Bit 1 of B is 'Seen exponent minus sign'
+// Bit 5 of B is 'Seen digits in exponent'
+// Bit 6 of B is 'Seen a digit'
+// Bit 7 of B is 'Large number of digits'
+
+// C = number of digits past the DP
+// Returns with Z set if found a valid number
+
+00a6 cd 55 01         call 0x0155        // Zero C':HL' accumulator
+00a9 06 00            ld b,0x00
+00ab 48               ld c,b             // Weird way of loading BC=0
+00ac ef               rst 0x28
+00ad cd b2 00         call 0x00b2
+00b0 18 fb            jr 0x00ad          // Infinite digit loop
+
+// Parse next digit of FP number.  Called from an infinite loop.
+
+00b2 cd 8c 00         call 0x008c        // Parse digit
+00b5 38 20            jr c,0x00d7        // No digit
+00b7 cb f0            set 6,b
+00b9 cb 78            bit 7,b
+00bb 20 15            jr nz,0x00d2       // Large number, ignore digits
+00bd cd c5 00         call 0x00c5
+00c0 cb 40            bit 0,b
+00c2 c8               ret z
+00c3 0d               dec c
+00c4 c9               ret
+
+00c5 cd 5e 01         call 0x015e        // Accumulate a digit
+00c8 c8               ret z              // Accumulator still small
+00c9 d9               exx
+00ca 62               ld h,d
+00cb 6b               ld l,e
+00cc 08               ex af,af'
+00cd 4f               ld c,a
+00ce d9               exx
+00cf cb f8            set 7,b         // Flag number as 'large'
+00d1 f1               pop af          // Pop 1st level return address
+
+// For large number, only keep track of digits past DP.
+
+00d2 cb 40            bit 0,b
+00d4 c0               ret nz
+00d5 0c               inc c
+00d6 c9               ret
+
+// Didn't find a digit
+
+00d7 cf 2e 05         rst 0x08, '.', target 0x00df
+00da cb 40            bit 0,b
+00dc cb c0            set 0,b
+00de c8               ret z           // Already seen DP, give up
+
+00df f1               pop af
+00e0 cb 70            bit 6,b
+00e2 c8               ret z           // Return if no digits seen
+00e3 2e 18            ld l,0x18
+00e5 26 00            ld h,0x00
+00e7 c5               push bc
+00e8 d5               push de
+00e9 d9               exx
+00ea cd 00 0e         call 0x0e00     // Normalize C':H':L'
+00ed 01 0a 00         ld bc,0x000a    // Push a pair of floats   
+00f0 dd 09            add ix,bc
+00f2 d1               pop de
+00f3 01 fb 00         ld bc,0x00fb
+00f6 c5               push bc
+00f7 d5               push de
+00f8 c3 0f 0d         jp 0x0d0f       // Store regs to FP stack top
+
+00fb c1               pop bc
+00fc d5               push de
+00fd cf 45 1c         rst 0x08, 'E', target 0x011c
+0100 cf 2b 02         rst 0x08, '+, target 0x0105
+0103 18 05            jr 0x010a
+
+0105 cf 2d 02         rst 0x08, '-', target 0x010a
+0108 cb c8            set 1,b
+
+// Parse exponent value
+
+010a cd 57 01         call 0x0157      // Zero integer accumulator
+010d cd 8c 00         call 0x008c      // See if we have a digit
+0110 38 0e            jr c,0x0120
+0112 cb e8            set 5,b          // Flag as having digits
+0114 cd 5e 01         call 0x015e      // Accumulate digit
+0117 c2 a2 01         jp nz,0x01a2     // Throw HOW if overflow
+011a 18 f1            jr 0x010d        // Read next digit
+
+
+011c d1               pop de           // Number ended without E
+011d af               xor a
+011e 18 17            jr 0x0137
+
+// Finish exponent parsing, we hit the non-digit.
+
+0120 cb 68            bit 5,b
+0122 28 f8            jr z,0x011c       // No digits seen
+0124 f1               pop af
+0125 d9               exx
+0126 79               ld a,c
+0127 b4               or h
+0128 20 27            jr nz,0x0151      // Overflow if C or H is nonzero
+012a 7d               ld a,l            // Exponent in L
+012b d9               exx
+012c cb 7f            bit 7,a           // Exponent > 128
+012e c2 a2 01         jp nz,0x01a2      // Throw HOW
+0131 cb 48            bit 1,b
+0133 28 02            jr z,0x0137
+0135 ed 44            neg               // Give exponent the right sign
+0137 81               add a,c
+0138 a7               and a
+0139 28 13            jr z,0x014e       // E+0, don't have to do anything
+013b cb 7f            bit 7,a
+013d 28 07            jr z,0x0146       // Deal with positive exponent
+013f 3c               inc a
+0140 f5               push af
+0141 cd 95 0c         call 0x0c95       // Divide FP stack by 10
+0144 18 05            jr 0x014b
+
+0146 3d               dec a
+0147 f5               push af
+0148 cd 84 0c         call 0x0c84       // Mult FP stack by 10
+014b f1               pop af
+014c 18 ea            jr 0x0138
+
+// Done parsing FP constant.  Return Z for invalid number.
+
+014e cb 70            bit 6,b
+0150 c9               ret
+
+// Swap registers back and throw HOW
+
+0151 d9               exx
+0152 c3 a2 01         jp 0x01a2
+
+
+// Zero out HL', C' and bit 6 of B.  This is done prior to parsing an
+// integer.
+
+0155 cb b0            res 6,b
+0157 d9               exx
+0158 2e 00            ld l,0x00
+015a 65               ld h,l
+015b 4d               ld c,l
+015c d9               exx
+015d c9               ret
+
+
+// Multiply BC':HL' by 10 and add A to it.
+// Z is set if B' (the high byte) is zero
+
+015e 08               ex af,af'
+015f d9               exx
+0160 54               ld d,h
+0161 5d               ld e,l
+0162 79               ld a,c
+0163 06 00            ld b,0x00
+0165 f5               push af
+0166 29               add hl,hl     // BC:HL*2
+0167 cb 11            rl c
+0169 cb 10            rl b
+016b 29               add hl,hl     // BC:HL*4
+016c cb 11            rl c
+016e cb 10            rl b
+0170 19               add hl,de     // BC:HL*5
+0171 89               adc a,c
+0172 4f               ld c,a
+0173 3e 00            ld a,0x00
+0175 88               adc a,b
+0176 47               ld b,a
+0177 f1               pop af
+0178 29               add hl,hl     // BC:HL*10
+0179 cb 11            rl c
+017b cb 10            rl b
+017d 08               ex af,af'     // Add A to BC:HL
+017e 85               add a,l
+017f 6f               ld l,a
+0180 3e 00            ld a,0x00
+0182 8c               adc a,h
+0183 67               ld h,a
+0184 3e 00            ld a,0x00
+0186 89               adc a,c
+0187 4f               ld c,a
+0188 3e 00            ld a,0x00
+018a 88               adc a,b
+018b 47               ld b,a
+018c d9               exx
+018d c9               ret
+
+
+// Entry point from just after restart.
+// Test system memory size.
+
+018e 25               dec h
+018f 7e               ld a,(hl)
+0190 2f               cpl
+0191 77               ld (hl),a
+0192 ae               xor (hl)
+0193 20 f9            jr nz,0x018e
+0195 22 6a 40         ld (0x406a),hl
+
+0198 af               xor a
+0199 32 90 40         ld (0x4090),a
+019c 31 00 42         ld sp,0x4200
+019f c3 7b 03         jp 0x037b
+
+// Print HOW, pushing DE prior to doing so.
+
+01a2 d5               push de
+
+// Print the HOW message
+
+01a3 11 a9 01         ld de,0x01a9
+01a6 c3 cd 08         jp 0x08cd
+
+01a9                  .db 'HOW?\r'
+01ae                  .db 'READY\r'
+01b4                  .db 'WHAT\r'
+01ba                  .db 'SORRY\r'
+
+01c0                  .db 'BREAK AT'
+01c8                  .db 0
+
+
+// READY loop entry point
+
+01c9 31 00 42         ld sp,0x4200    // Reset stack
+01cc cd e4 0f         call 0x0fe4     // Turn off cassette motor
+01cf cd 0e 00         call 0x000e     // Print CR
+
+01d2 11 ae 01         ld de,0x01ae    // Print ready message
+01d5 cd 4f 09         call 0x094f
+
+01d8 31 00 42         ld sp,0x4200
+01db cd 39 02         call 0x0239     // Clear buffer
+
+01de dd 21 f4 40      ld ix,0x40f4    // Reset FP stack
+01e2 cd fa 08         call 0x08fa     // Get a line of input
+01e5 d5               push de
+01e6 11 ac 40         ld de,0x40ac    // DE=parse pointer
+01e9 cd c4 0e         call 0x0ec4     // Parse integer to HL
+01ec 7c               ld a,h
+01ed b5               or l            // HL=0 means immediate command
+01ee c1               pop bc
+01ef ca 40 03         jp z,0x0340     // Match an interactive command
+01f2 1b               dec de
+01f3 7c               ld a,h          // Binary line number precedes line
+01f4 12               ld (de),a
+01f5 1b               dec de
+01f6 7d               ld a,l
+01f7 12               ld (de),a
+01f8 c5               push bc
+01f9 d5               push de
+01fa 79               ld a,c
+01fb 93               sub e
+01fc f5               push af
+01fd cd 2a 09         call 0x092a     // Find line in memory
+0200 d5               push de
+0201 20 10            jr nz,0x0213
+0203 d5               push de
+0204 cd 45 09         call 0x0945     // Scan to end of line, then continue line scan.
+0207 c1               pop bc
+0208 2a 6c 40         ld hl,(0x406c)
+020b cd 6f 0a         call 0x0a6f     // Copy line to end of memory
+020e 60               ld h,b
+020f 69               ld l,c
+0210 22 6c 40         ld (0x406c),hl  // New top of memory
+0213 c1               pop bc
+0214 2a 6c 40         ld hl,(0x406c)
+0217 f1               pop af
+0218 e5               push hl
+0219 fe 03            cp 0x03
+021b 28 bb            jr z,0x01d8      // Back to READY loop
+021d 85               add a,l          // HL += A
+021e 6f               ld l,a
+021f 3e 00            ld a,0x00
+0221 8c               adc a,h
+0222 67               ld h,a
+0223 ed 5b 6a 40      ld de,(0x406a)
+0227 e7               rst 0x20         // Compare DE to HL
+0228 d2 f4 08         jp nc,0x08f4     // Out of memory, throw SORRY
+022b 22 6c 40         ld (0x406c),hl
+022e d1               pop de
+022f cd 77 0a         call 0x0a77      // Create hole in memory for new line.
+0232 d1               pop de
+0233 e1               pop hl
+0234 cd 6f 0a         call 0x0a6f      // Copy new line to memory
+0237 18 9f            jr 0x01d8
+
+// Clear the BASIC frame at 0x409D, return with DE to low memory.
+
+0239 06 0a            ld b,0x0a
+023b e5               push hl
+023c 21 9d 40         ld hl,0x409d
+023f 36 00            ld (hl),0x00
+0241 23               inc hl
+0242 10 fb            djnz 0x023f
+0244 11 00 42         ld de,0x4200
+0247 e1               pop hl
+0248 c9               ret
+
+// Parse table for interactive statements
+
+0249                  .db 'LIST'
+024d                  .dw 0x8401
+
+024f                  .db 'RUN'
+0252                  .dw 0x838c
+
+0254                  .db 'NEW'
+0257                  .dw 0x8378
+
+0259                  .db 'CONT'
+025d                  .dw 0x83eb
+
+025f                  .db 'CLOAD'
+0264                  .dw 0x8ee9
+
+0266                  .db 'CSAVE'
+026b                  .dw 0x8f3b
+
+// Fall through to table for executable statements
+
+026d                  .db 'NEXT'
+0271                  .dw 0x85a3
+
+0273                  .db 'LET'
+0276                  .dw 0x86b8
+
+0278                  .db 'INPUT'
+027d                  .dw 0x8623
+
+027f                  .db 'IF'
+0281                  .dw 0x85fb
+
+0283                  .db 'ON'
+0285                  .dw 0x84fe
+
+0287                  .db 'GOTO'
+028b                  .dw 0x83b5
+
+028d                  .db 'GOSUB'
+0292                  .dw 0x84c4
+
+0294                  .db 'RESET'
+0299                  .dw 0x8838
+
+029b                  .db 'RETURN'
+02a1                  .dw 0x84e6
+
+02a3                  .db 'READ'
+02a7                  .dw 0x86f9
+
+02a9                  .db 'RESTORE'
+02b0                  .dw 0x86cd
+
+02b2                  .db 'REM'
+02b5                  .dw 0x85f6
+
+02b7                  .db 'DATA'
+02bc                  .dw 0x85f6
+
+02bd                  .db 'FOR'
+02c0                  .dw 0x8546
+
+02c2                  .db 'PRINT'
+02c7                  .dw 0x842f
+
+02c9                  .db 'SET'
+02cc                  .dw 0x883c
+
+02ce                  .db 'STOP'
+02d2                  .dw 0x83c5
+
+02d4                  .db 'END'
+02d7                  .dw 0x8387
+
+02d9                  .db 'CLS'
+02dc                  .dw 0x8000 + 0x04b5
+02de                  .dw 0x8000 + 0x06b3
+
+// Parser for ON-x subroutines
+
+02e0                  .db 'GOTO'
+02e4                  .dw 0x850f
+
+02e6                  .db 'GOSUB'
+02eb                  .dw 0x8000 + 0x0517
+02ed                  .dw 0x8000 + 0x08c9       // Throw WHAT
+
+// Intrinsic functions
+
+02ef                  .db 'RND'
+02f2                  .dw 0x8e47
+
+02f4                  .db 'ABS'
+02f7                  .dw 0x8819
+
+02f9                  .db 'MEM'
+02fc                  .dw 0x8821
+
+02fe                  .db 'INT'
+0301                  .dw 0x882f
+
+0303                  .db 'POINT'
+0308                  .dw 0x8000 + 0x0840
+030a                  .dw 0x8000 + 0x07f2
+
+// FOR-parser
+
+030c                  .db 'TO'
+030e                  .dw 0x8000 + 0x0555
+0310                  .dw 0x8000 + 0x08c9    // Not founds address 08c9
+
+// FOR-parser
+
+0312                  .db 'STEP'
+0316                  .dw 0x8000 + 0x0560
+0318                  .dw 0x8000 + 0x0565    // Not found address is 0565
+
+// PRINT parser
+
+031a                  .db 'TAB'
+031d                  .dw 0x849f
+
+031f                  .db 'AT'
+0321                  .dw 0x8473
+
+0323                  .db 'A$'
+0325                  .dw 0x8459
+
+0327                  .db 'B$'
+0329                  .dw 0x8000 + 0x045e
+032b                  .dw 0x8000 + 0x0452
+
+// Relational tokens
+
+032d                  .db '>'
+032e                  .dw 0x8763
+
+0330                  .db '='
+0331                  .db 0x878b
+
+0333                  .db '<'
+0334                  .dw 0x8000 + 0x0773
+0336                  .dw 0x8000 + 0x0797
+
+// IF-parser
+
+0338                  .db 'THEN'
+033c                  .dw 0x8000 + 0x0611
+033e                  .dw 0x8000 + 0x0617
+
+// Parse an interactive command
+
+0340 21 48 02         ld hl,0x0248    // Interactive commands
+
+// Match the line at DE to the reserved word table at HL
+
+0343 ef               rst 0x28
+0344 d5               push de
+0345 1a               ld a,(de)
+0346 13               inc de
+0347 23               inc hl
+0348 be               cp (hl)
+0349 28 06            jr z,0x0351       // First char matches
+034b cb 7e            bit 7,(hl)        // See if we hit the branch address
+034d 20 0c            jr nz,0x035b      // Found branch table
+034f 18 11            jr 0x0362         // Not at branch table
+
+0351 1a               ld a,(de)
+0352 13               inc de
+0353 23               inc hl
+0354 be               cp (hl)
+0355 28 fa            jr z,0x0351       // Jump if match is still good
+0357 cb 7e            bit 7,(hl)
+0359 28 03            jr z,0x035e       // Jump if have not found the branch address
+035b 1b               dec de
+035c 18 12            jr 0x0370         // Got a match, jump
+035e fe 2e            cp '.'
+0360 28 09            jr z,0x036b       // Matched an abbreviation
+
+0362 23               inc hl            // No match, skip to branch address
+0363 cb 7e            bit 7,(hl)
+0365 28 fb            jr z,0x0362       // Loop back
+0367 23               inc hl
+0368 d1               pop de
+0369 18 d8            jr 0x0343         // Try to match next entry
+036b 23               inc hl            // Loop for skipping to branch address
+036c cb 7e            bit 7,(hl)
+036e 28 fb            jr z,0x036b
+
+// Jump to the matched reserved word handler
+
+0370 7e               ld a,(hl)
+0371 23               inc hl
+0372 6e               ld l,(hl)
+0373 e6 7f            and 0x7f
+0375 67               ld h,a
+0376 f1               pop af
+0377 e9               jp (hl)
+
+// NEW entry point
+
+0378 cd c5 08         call 0x08c5
+
+// System reset entry point
+
+037b 3e 0c            ld a,0x0c
+037d d7               rst 0x10
+037e 21 00 42         ld hl,0x4200
+0381 22 6c 40         ld (0x406c),hl
+0384 c3 c9 01         jp 0x01c9
+
+// END entry point
+
+0387 cd c5 08         call 0x08c5
+038a 18 f8            jr 0x0384
+
+
+// RUN entry point
+
+038c cd c2 08         call 0x08c2     // Parse integer
+038f cd 39 02         call 0x0239     // Clear a buffer, point to start
+0392 18 03            jr 0x0397
+
+// Execute next line?
+
+0394 21 00 00         ld hl,0x0000
+0397 cd 2d 09         call 0x092d     // Find line HL
+039a 38 e8            jr c,0x0384     // Not found, go back to main
+
+// Execute line at DE.
+
+039c ed 53 9f 40      ld (0x409f),de
+03a0 13               inc de
+03a1 13               inc de
+03a2 cd 40 0b         call 0x0b40     // Get key from keyboard
+03a5 fe 03            cp 0x03
+03a7 28 1c            jr z,0x03c5     // jump if control-C
+03a9 cd e4 0f         call 0x0fe4
+03ac dd 21 f4 40      ld ix,0x40f4
+
+03b0 21 6c 02         ld hl,0x026c    // Point to execution keywords table
+03b3 18 8e            jr 0x0343       // Match a keyword
+
+// GOTO Entry point
+
+03b5 cd bd 0e         call 0x0ebd    // Get a number with digits
+03b8 d5               push de
+03b9 cd c5 08         call 0x08c5    // Require end of line
+03bc cd 2a 09         call 0x092a    // Find the line
+03bf c2 a3 01         jp nz,0x01a3   // Throw HOW
+03c2 f1               pop af
+03c3 18 d7            jr 0x039c
+
+// STOP entry point
+
+03c5 ed 53 9d 40      ld (0x409d),de     // Save parse pointer
+03c9 3e 0d            ld a,'\r'          // Print CR
+03cb d7               rst 0x10
+03cc 11 c0 01         ld de,0x01c0       // DE = 'BREAK AT' message
+03cf cd 4f 09         call 0x094f        // Print message
+03d2 2a 9f 40         ld hl,(0x409f)     // Current line being executed
+03d5 22 97 40         ld (0x4097),hl     // Save it
+03d8 5e               ld e,(hl)          // Extract line number
+03d9 23               inc hl
+03da 56               ld d,(hl)
+03db 21 00 00         ld hl,0x0000       // Zero current line being executed
+03de 22 9f 40         ld (0x409f),hl
+03e1 eb               ex de,hl           // HL = stop line number
+03e2 cd 6d 09         call 0x096d        // Display HL
+03e5 3e 0d            ld a,'\r'          // Print \r
+03e7 d7               rst 0x10
+03e8 c3 de 01         jp 0x01de          // Late entry to READY loop
+
+// CONT entry point
+
+03eb cd c5 08         call 0x08c5        // Require that this line ends
+03ee 2a 9d 40         ld hl,(0x409d)     // Saved parse pointer
+03f1 7c               ld a,h
+03f2 b5               or l
+03f3 28 8f            jr z,0x0384        // Nothing to continue, back to READY
+03f5 eb               ex de,hl
+03f6 2a 97 40         ld hl,(0x4097)     // Restore current execution line
+03f9 22 9f 40         ld (0x409f),hl
+03fc cd b3 08         call 0x08b3
+03ff 18 a1            jr 0x03a2          // Execute code at DE
+
+// LIST entry point
+
+0401 cd c2 08         call 0x08c2     // Parse number
+0404 cd 2a 09         call 0x092a     // Find the line
+0407 0e 0c            ld c,0x0c       // Print 12 lines
+
+0409 38 22            jr c,0x042d     // Back to main loop
+040b 0d               dec c
+040c 28 0a            jr z,0x0418
+040e c5               push bc
+040f cd 63 0a         call 0x0a63     // Display line
+0412 c1               pop bc
+0413 cd 2d 09         call 0x092d     // Scan for next line
+0416 18 f1            jr 0x0409
+
+// Done printing initial set of lines
+
+0418 cd 63 0a         call 0x0a63
+041b cd 2d 09         call 0x092d
+041e 38 0d            jr c,0x042d    // No more lines
+0420 cd 40 0b         call 0x0b40    // Get a key
+0423 28 fb            jr z,0x0420
+0425 fe 1b            cp 0x1b        // Escape, print another line?
+0427 28 ef            jr z,0x0418
+0429 fe 0d            cp '\r'
+042b 20 f3            jr nz,0x0420
+042d 18 b9            jr 0x03e8      // Back to main loop
+
+// PRINT entry point
+
+042f cf 23 09         rst 0x08, '#', target 0x43b
+0432 21 ac 40         ld hl,0x40ac       // Point to print buffer
+0435 22 99 40         ld (0x4099),hl
+0438 cd e9 0f         call 0x0fe9        // Turn on cassette motor
+
+043b cf 3a 05         rst 0x08, ':', target 0x443
+043e cd 0e 00         call 0x000e
+0441 18 bc            jr 0x03ff
+
+0443 cf 0d 06         rst 0x08, '\r', target 0x44c
+0446 cd 0e 00         call 0x000e        // Bare print statement, print \r
+0449 c3 94 03         jp 0x0394
+
+044c 21 19 03         ld hl,0x0319
+044f c3 43 03         jp 0x0343          // Parse print expressions-- TAB, AT, A$, B$.
+
+// print expression not found entry point
+
+0452 cd 5b 09         call 0x095b
+0455 18 42            jr 0x0499
+0457 18 0b            jr 0x0464         // Return here if more to print
+
+// PRINT A$ entry point
+
+0459 21 70 40         ld hl,0x4070
+045c 18 03            jr 0x0461
+
+// PRINT B$ entry point
+
+045e 21 80 40         ld hl,0x4080
+
+// Print string variable
+
+0461 cd b9 04         call 0x04b9
+
+// See if we have more things to print?
+
+0464 cf 2c 26         rst 0x08, ',', target 0x48d
+0467 3a 68 40         ld a, (0x4068)  // Print spaces until we get to tab stop?
+046a e6 0f            and 0x0f
+046c 28 22            jr z,0x0490
+046e 3e 20            ld a,' '
+0470 d7               rst 0x10
+0471 18 f4            jr 0x0467
+
+// PRINT AT entry point
+
+0473 cd 07 08         call 0x0807       // Integer expression to HL
+0476 ed 4b 68 40      ld bc,(0x4068)    // Load cursor position
+047a 3e 20            ld a,0x20
+047c 02               ld (bc),a         // erase cursor char
+047d 7c               ld a,h            // Constrain new pos to screen
+047e f6 fc            or 0xfc
+0480 e6 3f            and 0x3f
+0482 67               ld h,a
+0483 36 5f            ld (hl),0x5f      // Cursor at new position
+0485 22 68 40         ld (0x4068),hl    // Save
+
+0488 cf 2c 02         rst 0x08, ',', target 048d
+048b 18 03            jr 0x0490
+
+048d cf 3b 05         rst 0x08, ';', target 0x0495
+0490 cd b3 08         call 0x08b3
+0493 18 b7            jr 0x044c
+
+0495 cd 0e 00         call 0x000e      // Print \r
+0498 f7               rst 0x30
+0499 df               rst 0x18
+049a cd 70 09         call 0x0970
+049d 18 c5            jr 0x0464
+
+// PRINT TAB entry point
+
+049f cd 14 08         call 0x0814      // Parse integer expression to HL
+04a2 7d               ld a,l
+04a3 e6 3f            and 0x3f
+04a5 6f               ld l,a           // L = target column
+04a6 3a 68 40         ld a,(0x4068)
+04a9 e6 3f            and 0x3f         // A = current column
+04ab bd               cp l
+04ac 28 da            jr z,0x0488      // Reached target column
+04ae 30 d8            jr nc,0x0488     // Past target column
+04b0 3e 20            ld a,' '         // Print space
+04b2 d7               rst 0x10
+04b3 18 f1            jr 0x04a6        // Loop until target column
+
+// CLS entry point
+
+04b5 3e 0c            ld a,0x0c
+04b7 d7               rst 0x10
+04b8 f7               rst 0x30
+
+// Print string variable, which is nul terminated or at
+// the end of the 16 byte buffer.
+
+04b9 7e               ld a,(hl)
+04ba 23               inc hl
+04bb a7               and a
+04bc c8               ret z
+04bd d7               rst 0x10
+04be 7d               ld a,l
+04bf e6 0f            and 0x0f
+04c1 c8               ret z
+04c2 18 f5            jr 0x04b9
+
+// GOSUB entry point
+
+04c4 cd 9f 0a         call 0x0a9f       // Push BASIC frame
+04c7 cd bd 0e         call 0x0ebd       // Parse an integer to HL
+04ca d5               push de
+04cb cd 2a 09         call 0x092a       // Find the target line
+04ce c2 a3 01         jp nz,0x01a3      // Throw error
+04d1 2a 9f 40         ld hl,(0x409f)
+04d4 e5               push hl
+04d5 2a a3 40         ld hl,(0x40a3)
+04d8 e5               push hl
+04d9 21 00 00         ld hl,0x0000      // Mask current FOR statement
+04dc 22 a5 40         ld (0x40a5),hl
+04df 39               add hl,sp         // HL = SP
+04e0 22 a3 40         ld (0x40a3),hl
+04e3 c3 9c 03         jp 0x039c
+
+// RETURN entry point
+
+04e6 cd c5 08         call 0x08c5        // Required EOL
+04e9 2a a3 40         ld hl,(0x40a3)
+04ec 7c               ld a,h
+04ed b5               or l
+04ee ca c9 08         jp z,0x08c9        // Nothing stacked, throw WHAT
+04f1 f9               ld sp,hl           // Restore SP
+04f2 e1               pop hl
+04f3 22 a3 40         ld (0x40a3),hl
+04f6 e1               pop hl
+04f7 22 9f 40         ld (0x409f),hl
+04fa d1               pop de
+04fb c3 f2 05         jp 0x05f2
+
+// ON entry point
+
+04fe cd 0b 08         call 0x080b        // Nonnegative expr to HL
+0501 7c               ld a,h
+0502 b5               or l
+0503 28 06            jr z,0x050b
+0505 e5               push hl
+0506 21 df 02         ld hl,0x02df
+0509 18 47            jr 0x0552
+
+// Handle a zero ON index.
+
+050b cd 3c 05         call 0x053c        // Skip all numbers
+050e f7               rst 0x30           // Continue execution
+
+// ON x GOTO entry
+
+050f e1               pop hl
+0510 cd 26 05         call 0x0526
+0513 d5               push de
+0514 c3 bc 03         jp 0x03bc
+
+// ON x GOSUB entry
+
+0517 e1               pop hl
+0518 cd 26 05         call 0x0526
+051b 22 9b 40         ld (0x409b),hl
+051e cd 9f 0a         call 0x0a9f
+0521 2a 9b 40         ld hl,(0x409b)
+0524 18 a4            jr 0x04ca
+
+// Translate ON expression to line number.
+
+0526 2d               dec l
+0527 28 10            jr z,0x0539       // Parse the line number here
+0529 1a               ld a,(de)
+052a fe 0d            cp '\r'
+052c 28 dd            jr z,0x050b       // Hit end of line
+052e fe 3a            cp ':'
+0530 28 d9            jr z,0x050b       // Hit '='
+0532 13               inc de
+0533 fe 2c            cp ','
+0535 28 ef            jr z,0x0526
+0537 18 f0            jr 0x0529         // Bypass crap
+
+// Parse line number of ON-line
+
+0539 cd bd 0e         call 0x0ebd       // Parse a number into HL
+
+// Loop to skip rest of ON-line
+
+053c 1a               ld a,(de)
+053d fe 3a            cp ':'
+053f c8               ret z
+0540 fe 0d            cp '\r'
+0542 c8               ret z
+0543 13               inc de
+0544 18 f6            jr 0x053c
+
+// FOR entry point
+
+0546 cd 9f 0a         call 0x0a9f      // Push the BASIC stack
+0549 cd a8 08         call 0x08a8
+054c 22 a5 40         ld (0x40a5),hl
+054f 21 0b 03         ld hl,0x030b     // TO keyword table point
+0552 c3 43 03         jp 0x0343
+
+// TO entry point
+
+0555 cd 07 08         call 0x0807      // For end value
+0558 22 6e 40         ld (0x406e),hl
+055b 21 11 03         ld hl,0x0311     // Step keyword table
+055e 18 f2            jr 0x0552
+
+// STEP entry point
+
+0560 cd 07 08         call 0x0807      // Get step value
+0563 18 03            jr 0x0568
+0565 21 01 00         ld hl,0x0001     // Default step value
+
+0568 22 91 40         ld (0x4091),hl   // Record step value
+056b 2a 9f 40         ld hl,(0x409f)
+056e 22 93 40         ld (0x4093),hl   // Save top for FOR loop
+0571 eb               ex de,hl
+0572 22 95 40         ld (0x4095),hl   // Save pointer to FOR statement
+0575 01 0a 00         ld bc,0x000a
+0578 2a a5 40         ld hl,(0x40a5)
+057b eb               ex de,hl
+057c 60               ld h,b
+057d 68               ld l,b           // HL = 0
+057e 39               add hl,sp        // HL = SP
+057f 3e               .db 0x3e         // LD A, 0x09
+0580 09               add hl,bc
+0581 7e               ld a,(hl)
+0582 23               inc hl
+0583 b6               or (hl)
+0584 28 18            jr z,0x059e
+0586 7e               ld a,(hl)
+0587 2b               dec hl
+0588 ba               cp d
+0589 20 f5            jr nz,0x0580
+058b 7e               ld a,(hl)
+058c bb               cp e
+058d 20 f1            jr nz,0x0580
+058f eb               ex de,hl
+0590 21 00 00         ld hl,0x0000
+0593 39               add hl,sp
+0594 44               ld b,h
+0595 4d               ld c,l
+0596 21 0a 00         ld hl,0x000a
+0599 19               add hl,de
+059a cd 77 0a         call 0x0a77         // Copy memory (create hole?)
+059d f9               ld sp,hl
+059e 2a 95 40         ld hl,(0x4095)
+05a1 eb               ex de,hl
+05a2 f7               rst 0x30
+
+// NEXT entry point
+
+05a3 ff               rst 0x38            // Parse variable name
+05a4 da c9 08         jp c,0x08c9         // Throw WHAT if no name
+05a7 22 9b 40         ld (0x409b),hl      // Save NEXT variable
+05aa d5               push de             // Save error locus
+05ab eb               ex de,hl
+05ac 2a a5 40         ld hl,(0x40a5)
+05af 7c               ld a,h
+05b0 b5               or l
+05b1 ca ca 08         jp z,0x08ca         // No FOR active
+05b4 e7               rst 0x20            // Compare NEXT and FOR variables
+05b5 28 09            jr z,0x05c0         // Jump if match
+05b7 d1               pop de
+05b8 cd 84 0a         call 0x0a84         // Pop basic frame
+05bb 2a 9b 40         ld hl,(0x409b)
+05be 18 ea            jr 0x05aa           // Keep popping frames until match.
+
+// NEXT statement, found matching stack frame.
+
+05c0 cd c3 0b         call 0x0bc3         // Push HL variable onto FP stack
+05c3 cd 0b 0c         call 0x0c0b         // Convert stack to HL
+05c6 eb               ex de,hl
+05c7 2a 91 40         ld hl,(0x4091)      // FOR step value
+05ca e5               push hl
+05cb 19               add hl,de           // New step value
+05cc e5               push hl
+05cd cd 59 0c         call 0x0c59         // Convert HL to FP stack
+05d0 2a a5 40         ld hl,(0x40a5)      // Current FOR variable
+05d3 cd e9 0b         call 0x0be9         // Assign new loop value to variable
+05d6 d1               pop de
+05d7 2a 6e 40         ld hl,(0x406e)      // FOR end value
+05da f1               pop af              // Get sign of step value
+05db b7               or a
+05dc f2 e0 05         jp p,0x05e0         // Compare based on sign of step
+05df eb               ex de,hl
+05e0 7c               ld a,h
+05e1 aa               xor d
+05e2 f2 e6 05         jp p,0x05e6
+05e5 eb               ex de,hl
+05e6 e7               rst 0x20
+05e7 d1               pop de
+05e8 38 08            jr c,0x05f2         // Jump if loop is done
+05ea 2a 93 40         ld hl,(0x4093)      // Execution pointer
+05ed 22 9f 40         ld (0x409f),hl      // to top of FOR loop.
+05f0 18 ac            jr 0x059e
+
+05f2 cd 84 0a         call 0x0a84         // Pop BASIC frame
+05f5 f7               rst 0x30
+
+// REM and DATA entry point
+
+05f6 21 00 00         ld hl,0x0000
+05f9 18 03            jr 0x05fe
+
+// IF Entry point
+
+05fb cd 07 08         call 0x0807      // Test IF
+05fe 7c               ld a,h
+05ff b5               or l
+0600 20 09            jr nz,0x060b
+0602 cd 47 09         call 0x0947      // Scan for next line
+0605 d2 9c 03         jp nc,0x039c     // Execute if found
+0608 c3 c9 01         jp 0x01c9        // Go to main loop.
+060b 21 37 03         ld hl,0x0337     // Require THEN keyword
+060e c3 43 03         jp 0x0343
+
+// THEN entry point (follow IF-expression)
+
+0611 cd c4 0e         call 0x0ec4      // Parse integer to HL
+0614 c2 13 05         jp nz,0x0513     // Goto line if nonzero
+
+// No THEN-statement
+
+0617 c3 a2 03         jp 0x03a2        // Continue execution
+
+
+061a ed 7b 9b 40      ld sp,(0x409b)
+061e e1               pop hl
+061f 22 9f 40         ld (0x409f),hl
+0622 d1               pop de
+
+// INPUT entry point
+
+0623 cf 23 0a         rst 0x08, '#', target 0x630
+0626 cd f4 0e         call 0x0ef4      // Read data from cassette
+0629 d5               push de
+062a 2a 9f 40         ld hl,(0x409f)
+062d e5               push hl
+062e 18 1e            jr 0x064e
+
+0630 d5               push de
+0631 cd 5b 09         call 0x095b
+0634 18 03            jr 0x0639
+
+0636 cf 3b 18         rst 0x08, ';', target 0x0651
+0639 2a 9f 40         ld hl, (409f)
+063c e5               push hl
+063d 21 30 06         ld hl,0x0630
+0640 22 9f 40         ld (0x409f),hl
+0643 ed 73 9b 40      ld (0x409b),sp
+0647 d5               push de
+0648 3e 3f            ld a, '?'
+064a cd fc 08         call 0x08fc   // Print '?', get line of input
+064d d1               pop de
+064e c3 d4 06         jp 0x06d4
+
+0651 f1               pop af
+0652 18 76            jr 0x06ca
+
+// Parse a DATA statement/INPUT value at DE
+
+0654 ca ae 08         jp z,0x08ae        // Parse/assign numeric value
+0657 ef               rst 0x28           // Parse next character
+0658 1a               ld a,(de)
+0659 fe 0d            cp '\r'
+065b 28 12            jr z,0x066f        // Reach \r in DATA statement
+065d fe 22            cp '"'
+065f 28 17            jr z,0x0678        // Parse a quoted string
+0661 fe 2c            cp ','
+0663 28 0a            jr z,0x066f        // Empty string
+0665 77               ld (hl),a          // Copy not-quoted data
+0666 23               inc hl
+0667 13               inc de
+0668 7d               ld a,l
+0669 e6 0f            and 0x0f
+066b 28 1d            jr z,0x068a        // No more buffer space, eat rest of line.
+066d 18 e9            jr 0x0658
+
+// Zero out remaining bytes of buffer.  Z is clear.
+
+066f 36 00            ld (hl),0x00
+0671 23               inc hl
+0672 7d               ld a,l
+0673 e6 0f            and 0x0f
+0675 20 f8            jr nz,0x066f
+0677 c9               ret
+
+// Parse a quoted string
+
+0678 13               inc de
+0679 1a               ld a,(de)
+067a fe 0d            cp '\r'
+067c 28 f1            jr z,0x066f     // String ends with \r
+067e 13               inc de
+067f fe 22            cp '"'
+0681 28 ec            jr z,0x066f     // String ends with "
+0683 77               ld (hl),a       // Copy character into buffer
+0684 23               inc hl
+0685 7d               ld a,l
+0686 e6 0f            and 0x0f
+0688 20 ef            jr nz,0x0679    // Jump if room left in buffer
+068a 1a               ld a,(de)
+068b fe 2c            cp ','
+068d c8               ret z           // Comma terminates string
+068e fe 0d            cp '\r'
+0690 c8               ret z           // \r terminates string
+0691 13               inc de
+0692 18 f6            jr 0x068a       // Gobble remaining data in element
+
+
+// Entry point for parsing assignable variable including A$/B$.
+// Carry is set if no variable name was found.
+// Z flag = 0 if we're reading a string variable.
+
+0694 ff               rst 0x38        // Parse variable name
+0695 d8               ret c           // Return if no variable
+0696 1b               dec de          // See how variable ended
+0697 1a               ld a,(de)
+0698 13               inc de
+0699 fe 29            cp ')'
+069b c8               ret z           // Don't allow READ to array variable
+069c 1a               ld a,(de)       // Load at next char
+069d fe 24            cp '$'
+069f 28 02            jr z,0x06a3     // Reading A$ or B$
+06a1 af               xor a           // Clear carry, set zero
+06a2 c9               ret
+
+06a3 7d               ld a,l          // Set of read A$/B$
+06a4 fe 07            cp 0x07
+06a6 d2 c9 08         jp nc,0x08c9    // Jump if HL points to numeric A or B 
+06a9 13               inc de          // Adjust HL to point to string storage
+06aa cb 27            sla a
+06ac cb 27            sla a
+06ae c6 70            add a,0x70
+06b0 6f               ld l,a
+06b1 a7               and a           // Clear Z
+06b2 c9               ret
+
+06b3 1a               ld a,(de)
+06b4 fe 0d            cp '\r'
+06b6 28 0d            jr z,0x06c5
+
+// LET entry point
+
+06b8 cd 94 06         call 0x0694
+06bb 38 0d            jr c,0x06ca
+06bd f5               push af
+06be cf 3d 09         rst 0x08, '=', target 0x06ca
+06c1 f1               pop af
+06c2 cd 54 06         call 0x0654
+06c5 f7               rst 0x30
+
+06c6 e1               pop hl
+06c7 22 9f 40         ld (0x409f),hl
+06ca c3 c9 08         jp 0x08c9          // Throw WHAT
+
+// RESTORE entry point
+
+06cd 21 00 00         ld hl,0x0000       // Move READ pointer back to start
+06d0 22 a1 40         ld (0x40a1),hl
+06d3 f7               rst 0x30
+
+// Parse line of from INPUT statement
+
+06d4 cd 94 06         call 0x0694        // Parse assignment variable
+06d7 38 ed            jr c,0x06c6        // Bad variable, throw WHAT
+06d9 d5               push de
+06da 11 ac 40         ld de,0x40ac       // Point to input line
+06dd cd 54 06         call 0x0654        // parse input value
+06e0 ed 53 99 40      ld (0x4099),de     // save input pointer
+06e4 d1               pop de
+
+06e5 cf 2c 53         rst 0x08, ',', target 0x073b
+06e8 cd 94 06         call 0x0694        // Parse non-first assignement variable
+06eb 38 d9            jr c,0x06c6        // Bad variable, throw WHAT
+06ed d5               push de
+06ee f5               push af
+06ef ed 5b 99 40      ld de,(0x4099)     // Reload input pointer
+06f3 cf 2c 4b         rst 0x08, ',', target 0x0741
+06f6 f1               pop af
+06f7 18 e4            jr 0x06dd          // Parse the next value
+
+// READ entry point
+
+06f9 cd 94 06         call 0x0694
+06fc d5               push de
+06fd 38 43            jr c,0x0742          // No variable, throw WHAT
+06ff f5               push af              // Save flags
+0700 ed 5b a1 40      ld de,(0x40a1)
+0704 7a               ld a,d
+0705 b3               or e
+0706 20 29            jr nz,0x0731         // READ pointer is not 0
+0708 11 00 42         ld de,0x4200         // Load start of program
+070b e5               push hl              // Look for DATA statement at DE
+070c cd 51 07         call 0x0751          // Scan forward to next DATA line.
+070f e1               pop hl
+0710 38 33            jr c,0x0745          // No more data statements, throw HOW
+0712 f1               pop af               // Restore Z flag (data type)
+0713 ed 4b 9f 40      ld bc,(0x409f)
+0717 c5               push bc
+0718 01 00 00         ld bc,0x0000
+071b ed 43 9f 40      ld (0x409f),bc
+071f cd 54 06         call 0x0654
+0722 c1               pop bc
+0723 ed 43 9f 40      ld (0x409f),bc
+0727 ed 53 a1 40      ld (0x40a1),de
+072b d1               pop de
+072c cf 2c 11         rst 0x08, ',', target 0x740
+072f 18 c8            jr 0x06f9
+
+// Scan contents of a DATA statement
+
+0731 cf 2c 02         rst 0x08, ',', target 0x736
+0734 18 dc            jr 0x0712
+
+0736 cf 0d 08         rst 0x08, '\r', target 0x741
+0739 18 d0            jr 0x070b
+
+073b e1               pop hl
+073c 22 9f 40         ld (0x409f),hl
+073f f1               pop af
+0740 f7               rst 0x30
+
+// Comma not found in INPUT line
+
+0741 f1               pop af
+0742 c3 ca 08         jp 0x08ca    // Thow WHAT
+
+// No more DATA statements found in program
+
+0745 f1               pop af
+0746 c3 a3 01         jp 0x01a3    // Throw HOW
+
+// Found DATA statement.  DE has been updated to the body of the DATA
+// statement.
+
+0749 af               xor a
+074a c9               ret
+
+// Did not find DATA statement.  Skip forward to the end of this line,
+// Fall through to the scan-for-data-statement again.
+
+074b 1a               ld a,(de)
+074c 13               inc de
+074d fe 0d            cp '\r'
+074f 20 fa            jr nz,0x074b
+
+// Scan a program line for DATA statement.
+// Returns with C set if we reached the end of the program.
+
+0751 13               inc de
+0752 13               inc de
+0753 2a 6c 40         ld hl,(0x406c)
+0756 e7               rst 0x20
+0757 d8               ret c
+0758 21 ba 0b         ld hl,0x0bba
+075b 18 4d            jr 0x07aa
+
+
+075d cd a7 07         call 0x07a7     // Parse relational operator
+0760 c3 59 0c         jp 0x0c59       // Convert HL to number
+
+// > entry point
+
+0763 cf 3d 06         rst 0x08, '=', target 0x076c
+0766 cd 99 07         call 0x0799     // Numeric compare for >
+0769 d8               ret c
+076a 18 37            jr 0x07a3       // Return true (HL=1)
+
+076c cd 99 07         call 0x0799     // Numeric compare for >=
+076f c8               ret z
+0770 d8               ret c
+0771 18 30            jr 0x07a3       // Return true (HL=1)
+
+// < entry point
+
+0773 cf 3d 0c         rst 0x08, '=', target 0x782
+0776 cd 99 07         call 0x0799     // Numeric compare
+0779 21 01 00         ld hl,0x0001    // HL=true
+077c c8               ret z
+077d d8               ret c
+077e 21 00 00         ld hl,0x0000    // HL=false
+0781 c9               ret
+
+0782 cf 3e 0c         rst 0x08, '>', target 0x0791
+0785 cd 99 07         call 0x0799     // Compare for <>
+0788 c8               ret z
+0789 18 18            jr 0x07a3
+
+//  = entry point
+
+078b cd 99 07         call 0x0799
+078e c0               ret nz
+078f 18 12            jr 0x07a3
+
+// Hanlde < comparison
+
+0791 cd 99 07         call 0x0799
+0794 d0               ret nc
+0795 18 0c            jr 0x07a3
+
+// Relational expression not found
+
+0797 f1               pop af
+0798 c9               ret
+
+
+// Numeric comparison, returns Z and carry flags.
+// Also returns with HL=0 (false)
+
+0799 cd ad 07         call 0x07ad
+079c cd b1 0c         call 0x0cb1
+
+079f 21 00 00         ld hl,0x0000
+07a2 c9               ret
+
+07a3 21 01 00         ld hl,0x0001
+07a6 c9               ret
+
+
+// Look for relational operator on the input
+
+07a7 21 2c 03         ld hl,0x032c
+07aa c3 43 03         jp 0x0343
+
+
+// Main expression parsing
+
+07ad cf 2d 08         rst 0x08, '-', target 0x07b8
+07b0 21 00 00         ld hl,0x0000    // Compute -x as 0-x
+07b3 cd 59 0c         call 0x0c59
+07b6 18 14            jr 0x07cc
+
+07b8 cf 2b 00         rst 0x08, '+', target 0x07bb
+07bb cd d4 07         call 0x07d4
+
+07be cf 2b 08         rst 0x08, '+', target 0x07c9
+07c1 cd d4 07         call 0x07d4
+07c4 cd d3 0c         call 0x0cd3
+07c7 18 f5            jr 0x07be
+
+07c9 cf 2d 37         rst 0x08, '-', target 0x0803
+07cc cd d4 07         call 0x07d4
+07cf cd bf 0c         call 0x0cbf
+07d2 18 ea            jr 0x07be
+
+07d4 cd ed 07         call 0x07ed
+07d7 cf 2a 08         rst 0x08, '*', target 0x07e2
+07da cd ed 07         call 0x07ed
+07dd cd 87 0c         call 0x0c87
+07e0 18 f5            jr 0x07d7
+
+07e2 cf 2f 1e         rst 0x08, '/', target 0x0803
+07e5 cd ed 07         call 0x07ed
+07e8 cd 98 0c         call 0x0c98
+07eb 18 ea            jr 0x07d7
+
+// Parse primary expression.  Start with intrinsic functions.
+
+07ed 21 ee 02         ld hl,0x02ee
+07f0 18 b8            jr 0x07aa
+
+// Intrinsic function not found, parse regular expr
+
+07f2 ff               rst 0x38          // Try to parse variable name
+07f3 38 03            jr c,0x07f8       // Not found
+07f5 c3 c3 0b         jp 0x0bc3         // Push (HL) to FP stack
+
+// Variable name not found, try a constant
+
+07f8 cd a6 00         call 0x00a6
+07fb c0               ret nz            // Return if constant found
+
+// Fall through to unnecessary parenthesis.
+
+// Compute intrinsic function argument value.
+
+07fc cf 28 05         rst 0x08, '(', target 0x0804
+07ff df               rst 0x18
+0800 cf 29 01         rst 0x08, ')', target 0x0804
+0803 c9               ret
+
+0804 c3 c9 08         jp 0x08c9          // Throw WHAT
+
+// Compute integer expression to HL
+
+0807 df               rst 0x18
+0808 c3 0b 0c         jp 0x0c0b
+
+// Compute nonnegative integer expression to HL
+
+080b cd 07 08         call 0x0807
+080e cb 7c            bit 7,h
+0810 c2 a2 01         jp nz,0x01a2
+0813 c9               ret
+
+// Compute integer expression, return in HL
+
+0814 cd fc 07         call 0x07fc
+0817 18 ef            jr 0x0808
+
+// ABS entry point
+
+0819 cd fc 07         call 0x07fc     // 07fc Compute intrinsic arg value
+081c dd cb ff be      res 7,(ix-1)    // Reset sign bit
+0820 c9               ret
+
+// MEM entry point
+
+0821 d5               push de
+0822 ed 5b 6c 40      ld de,(0x406c)
+0826 2a 6a 40         ld hl,(0x406a)
+0829 af               xor a
+082a ed 52            sbc hl,de         // Top of memory - top of used memory
+082c d1               pop de
+082d 18 06            jr 0x0835
+
+// INT entry point
+
+082f cd fc 07         call 0x07fc       // Compute argument value
+0832 cd 08 08         call 0x0808       // Convert float to HL
+0835 c3 59 0c         jp 0x0c59         // Push HL to FP stack
+
+// RESET entry point
+
+0838 3e 80            ld a,0x80
+083a 18 06            jr 0x0842
+
+// SET entry point
+
+083c 3e 01            ld a,0x01
+083e 18 02            jr 0x0842
+
+// POINT entry point
+
+0840 3e 00            ld a,0x00
+
+// Common entry for RESET, SET, POINT
+
+0842 a7               and a           // Set flags
+0843 f5               push af         // Push opcode as flags
+0844 cf 28 52         rst 0x08, '(', target 0x0899
+0847 cd 0b 08         call 0x080b
+084a e5               push hl         // Push X coordinate
+084b cf 2c 4b         rst 0x08, ',', target 0x0899
+084e cd 0b 08         call 0x080b
+0851 cf 29 45         rst 0x08, ')', target 0x0899
+0854 01 30 00         ld bc,0x0030
+0857 a7               and a           // Clear carry
+0858 ed 42            sbc hl,bc
+085a 30 fc            jr nc,0x0858    // Keep subtracting until negative
+085c 09               add hl,bc       // Add back, we now have 0 <= Y < 48
+085d 7d               ld a,l
+085e 26 ff            ld h,0xff
+0860 24               inc h
+0861 d6 03            sub 0x03
+0863 30 fb            jr nc,0x0860
+0865 c6 03            add a,0x03      // Now H = Y % 3
+0867 c1               pop bc          // BC = X 
+0868 44               ld b,h
+0869 cb 21            sla c           // Bit shifting magic
+086b cb 18            rr b
+086d cb 19            rr c
+086f cb 18            rr b
+0871 cb 19            rr c
+0873 17               rla
+0874 3c               inc a
+0875 37               scf
+0876 26 00            ld h,0x00
+0878 cb 14            rl h
+087a 3d               dec a
+087b 20 fb            jr nz,0x0878
+087d 78               ld a,b
+087e f6 fc            or 0xfc
+0880 e6 3f            and 0x3f
+0882 47               ld b,a
+0883 0a               ld a,(bc)       // Load byte on screen
+0884 cb 7f            bit 7,a
+0886 20 03            jr nz,0x088b    // Jump if in graphics
+0888 3e 80            ld a,0x80
+088a 02               ld (bc),a       // Make it a graphics char with no pixels 
+088b f1               pop af          // Pop flags
+088c 0a               ld a,(bc)       // A is guaranteed to be graphics char
+088d 28 0c            jr z,0x089b     // Jump if doing POINT
+088f f2 a5 08         jp p,0x08a5     // Jump if doing SET
+0892 7c               ld a,h          // Complement H
+0893 2f               cpl
+0894 67               ld h,a
+0895 0a               ld a,(bc)
+0896 a4               and h           // Reset pixel
+0897 02               ld (bc),a       // Store
+0898 f7               rst 0x30
+0899 18 2e            jr 0x08c9
+089b a4               and h           // POINT handling
+089c 21 00 00         ld hl,0x0000
+089f 28 01            jr z,0x08a2
+08a1 2c               inc l
+08a2 c3 59 0c         jp 0x0c59       // HL=0 if off, HL=1 if on.  Push HL.
+08a5 b4               or h
+08a6 02               ld (bc),a       // Set pixel
+08a7 f7               rst 0x30
+
+// Parse a variable name followed by an equals sign and expression.
+
+08a8 ff               rst 0x38
+08a9 38 1e            jr c,0x08c9      // Throw a WHAT error
+
+08ab cf 3d 1b         rst 0x08, '=', target 0x08c9
+
+// Parse expression RHS and assign to (HL)
+
+08ae e5               push hl
+08af df               rst 0x18
+08b0 c3 e8 0b         jp 0x0be8
+
+
+08b3 cf 3a 04         rst 0x08, ':', target 0x08ba
+08b6 f1               pop af
+08b7 c3 a2 03         jp 0x03a2
+
+08ba cf 0d 04         rst 0x08, '\r', target 0x08c1
+08bd f1               pop af
+08be c3 94 03         jp 0x0394
+08c1 c9               ret
+
+// Parse integer, with an end of line after the number.
+
+08c2 cd c4 0e         call 0x0ec4
+
+// Subroutine for requiring that the current lines ends.  If not,
+// prints the 'WHAT' message.
+
+08c5 ef               rst 0x28
+08c6 fe 0d            cp '\r'
+08c8 c8               ret z
+
+// Entry for the WHAT message (syntax error)
+
+08c9 d5               push de
+08ca 11 b4 01         ld de,0x01b4       // WHAT message
+
+// Entry for printing error message in DE
+
+08cd cd 4f 09         call 0x094f        // Print nul-terminated message
+08d0 ed 5b 9f 40      ld de,(0x409f)
+08d4 7a               ld a,d
+08d5 b3               or e
+08d6 28 19            jr z,0x08f1    // Back to READY if not executing anything
+08d8 13               inc de
+08d9 1a               ld a,(de)
+08da 1b               dec de
+08db b7               or a
+08dc fa 1a 06         jp m,0x061a
+08df e1               pop hl
+08e0 7e               ld a,(hl)
+08e1 f5               push af
+08e2 97               sub a          // Another way of setting A=0
+08e3 77               ld (hl),a
+08e4 cd 63 0a         call 0x0a63    // Display source line
+08e7 1b               dec de
+08e8 f1               pop af
+08e9 12               ld (de),a
+08ea 3e 3f            ld a,'?'       // Print '?'
+08ec d7               rst 0x10
+08ed 97               sub a
+08ee cd 4f 09         call 0x094f
+08f1 c3 c9 01         jp 0x01c9
+
+
+08f4 d5               push de
+08f5 11 ba 01         ld de,0x01ba   // SORRY error
+08f8 18 d3            jr 0x08cd
+
+// Print '>' prompt
+
+08fa 3e 3e            ld a,'>'
+08fc d7               rst 0x10
+
+// Get a line of input
+
+08fd 11 ac 40         ld de,0x40ac
+0900 cd 40 0b         call 0x0b40
+0903 28 fb            jr z,0x0900     // Tight loop to get a key
+
+0905 fe 0d            cp '\r'
+0907 28 0c            jr z,0x0915     // Add CR to buffer
+
+0909 fe 1d            cp 0x1d
+090b 28 15            jr z,0x0922
+090d fe 03            cp 0x03
+090f 28 e0            jr z,0x08f1     // Break key, jump back to READY
+0911 fe 20            cp ' '
+0913 38 eb            jr c,0x0900     // Discard unknown control code
+
+0915 12               ld (de),a       // Add key to buffer
+0916 13               inc de
+0917 fe 0d            cp '\r'
+0919 c8               ret z           // Return if we've added a CR
+
+091a 7b               ld a,e
+091b fe f3            cp 0xf3
+091d 20 e1            jr nz,0x0900    // Back to loop if buffer not full.
+091f 3e 1d            ld a,0x1d       // Delete new character
+0921 d7               rst 0x10        // print it
+
+0922 7b               ld a,e          // Delete char from buffer
+0923 fe ac            cp 0xac
+0925 28 d3            jr z,0x08fa     // Ignore delete if at start of buffer
+0927 1b               dec de          // Delete character
+0928 18 d6            jr 0x0900       // Get next character
+
+
+// Scan memory for line given by HL beginning at the program start.
+
+092a 11 00 42         ld de,0x4200
+
+// Scan memory for line HL starting at DE.  Returns with DE pointing
+// to the line.  carry set if we reached the end of memory, zero set
+// if no number was specified.
+
+092d e5               push hl
+092e 7a               ld a,d
+092f fe 42            cp 'B'
+0931 38 be            jr c,0x08f1       // To mainloop
+0933 2a 6c 40         ld hl,(0x406c)
+0936 2b               dec hl
+0937 e7               rst 0x20
+0938 e1               pop hl
+0939 d8               ret c             // Reached end of lines in memory
+093a 1a               ld a,(de)
+093b 95               sub l
+093c 47               ld b,a
+093d 13               inc de
+093e 1a               ld a,(de)
+093f 9c               sbc a,h
+0940 38 04            jr c,0x0946
+0942 1b               dec de
+0943 b0               or b           // B is number of digits in the number
+0944 c9               ret
+
+// Scan to the end of line pointed to by DE, then resume scan for line
+// HL.
+
+0945 13               inc de
+0946 13               inc de
+0947 1a               ld a,(de)
+0948 fe 0d            cp '\r'
+094a 20 fa            jr nz,0x0946
+094c 13               inc de
+094d 18 de            jr 0x092d
+
+
+// Print nul-terminated message at DE
+
+094f af               xor a
+
+// Print message pointed to by DE terminated by A or \r
+
+0950 47               ld b,a
+0951 1a               ld a,(de)
+0952 13               inc de
+0953 b8               cp b
+0954 c8               ret z
+0955 d7               rst 0x10
+0956 fe 0d            cp '\r'
+0958 20 f7            jr nz,0x0951
+095a c9               ret
+
+// Print expression entry.
+
+095b cf 22 0e         rst 0x08, '"', target 0x096c
+095e 3e 22            ld a,0x22
+0960 cd 50 09         call 0x0950     // Print quoted string to end quote
+0963 fe 0d            cp '\r'         // end of line?
+0965 e1               pop hl          // return address to HL
+0966 ca 94 03         jp z,0x0394     // Keep executing
+0969 23               inc hl
+096a 23               inc hl
+096b e9               jp (hl)         // Return to two bytes after original
+096c c9               ret
+
+// Display HL as a decimal number
+
+096d cd 59 0c         call 0x0c59
+0970 d5               push de
+0971 c5               push bc
+0972 e5               push hl
+0973 dd 7e fe         ld a,(ix-2)    // Exponent
+0976 fe 80            cp 0x80
+0978 20 09            jr nz,0x0983
+
+// Special case of printing zero value
+
+097a 3e 20            ld a,' '       // Print space
+097c d7               rst 0x10
+097d 3e 30            ld a,'0'       // Print '0'
+097f d7               rst 0x10
+0980 c3 41 0a         jp 0x0a41
+
+0983 dd 7e ff         ld a,(ix-1)
+0986 a7               and a
+
+0987 3e 20            ld a,' '      // Print space or '-'
+0989 28 02            jr z,0x098d
+098b 3e 2d            ld a,'-'      // Print '-'
+098d d7               rst 0x10
+
+098e af               xor a         // Zero sign bit
+098f dd 77 ff         ld (ix-1),a
+0992 3e ff            ld a,0xff
+
+0994 f5               push af
+0995 21 b9 0e         ld hl,0x0eb9    // Point to constant ??
+0998 cd a6 0c         call 0x0ca6     // Divide by it
+099b 30 07            jr nc,0x09a4
+099d cd 84 0c         call 0x0c84     // FP Multiply by 10.0
+09a0 f1               pop af
+09a1 3d               dec a
+09a2 18 f0            jr 0x0994
+
+
+09a4 21 b5 0e         ld hl,0x0eb5
+09a7 cd a6 0c         call 0x0ca6
+09aa 38 08            jr c,0x09b4
+09ac cd 95 0c         call 0x0c95     // FP division by 10.0
+09af f1               pop af
+09b0 3c               inc a
+09b1 f5               push af
+09b2 18 f0            jr 0x09a4
+
+09b4 dd 7e fe         ld a,(ix-2)
+09b7 ed 44            neg
+09b9 28 0b            jr z,0x09c6
+09bb d9               exx
+09bc cb 39            srl c
+09be cb 1c            rr h
+09c0 cb 1d            rr l
+09c2 d9               exx
+09c3 3d               dec a
+09c4 18 f3            jr 0x09b9
+09c6 06 07            ld b,0x07
+09c8 dd e5            push ix
+09ca e1               pop hl
+09cb 36 00            ld (hl),0x00
+09cd 23               inc hl
+
+09ce 3e 00            ld a,0x00
+09d0 cd 5e 01         call 0x015e
+09d3 d9               exx
+09d4 78               ld a,b
+09d5 d9               exx
+09d6 77               ld (hl),a
+09d7 23               inc hl
+09d8 10 f4            djnz 0x09ce
+
+09da 06 06            ld b,0x06
+09dc 0e 00            ld c,0x00
+09de 2b               dec hl
+09df 7e               ld a,(hl)
+09e0 fe 05            cp 0x05
+09e2 3f               ccf
+09e3 3e 00            ld a,0x00
+09e5 2b               dec hl
+09e6 8e               adc a,(hl)
+09e7 cb 21            sla c
+09e9 fe 0a            cp 0x0a
+09eb 38 02            jr c,0x09ef
+09ed 3e 00            ld a,0x00
+09ef 77               ld (hl),a
+09f0 f5               push af
+09f1 a7               and a
+09f2 28 02            jr z,0x09f6
+09f4 cb c1            set 0,c
+09f6 f1               pop af
+09f7 10 e9            djnz 0x09e2
+
+09f9 79               ld a,c
+09fa c1               pop bc
+09fb 38 06            jr c,0x0a03
+09fd 04               inc b
+09fe c5               push bc
+09ff 06 01            ld b,0x01
+0a01 18 df            jr 0x09e2
+0a03 4f               ld c,a
+0a04 78               ld a,b
+0a05 3c               inc a
+0a06 fa 13 0a         jp m,0x0a13
+0a09 fe 07            cp 0x07
+0a0b 30 06            jr nc,0x0a13
+0a0d 47               ld b,a
+0a0e cd 4d 0a         call 0x0a4d
+0a11 18 2e            jr 0x0a41
+0a13 c5               push bc
+0a14 06 01            ld b,0x01
+0a16 cd 4d 0a         call 0x0a4d
+0a19 3e 45            ld a,'E'        // Print 'E'
+0a1b d7               rst 0x10
+0a1c c1               pop bc
+0a1d cb 78            bit 7,b
+0a1f 3e 2b            ld a,'+'
+0a21 28 08            jr z,0x0a2b
+0a23 3e 2d            ld a,'-'
+0a25 d7               rst 0x10
+0a26 78               ld a,b
+0a27 ed 44            neg
+0a29 18 02            jr 0x0a2d
+0a2b d7               rst 0x10
+0a2c 78               ld a,b
+0a2d 06 00            ld b,0x00
+
+0a2f fe 0a            cp 0x0a
+0a31 38 05            jr c,0x0a38
+0a33 c6 f6            add a,0xf6
+0a35 04               inc b
+0a36 18 f7            jr 0x0a2f
+
+0a38 f6 30            or 0x30          // Print exponent as B:A bcd values
+0a3a 4f               ld c,a
+0a3b 78               ld a,b
+0a3c f6 30            or 0x30
+0a3e d7               rst 0x10
+0a3f 79               ld a,c
+0a40 d7               rst 0x10
+
+0a41 3e 20            ld a,' '         // Print space
+0a43 d7               rst 0x10
+0a44 e1               pop hl
+0a45 c1               pop bc
+0a46 d1               pop de
+0a47 01 fb ff         ld bc,0xfffb     // Pop fp stack
+0a4a dd 09            add ix,bc
+0a4c c9               ret
+
+0a4d 04               inc b
+0a4e 05               dec b
+0a4f 20 03            jr nz,0x0a54
+0a51 3e 2e            ld a,'.'       // print '.'
+0a53 d7               rst 0x10
+0a54 7e               ld a,(hl)      // Print a digit
+0a55 f6 30            or '0'
+0a57 d7               rst 0x10
+0a58 23               inc hl
+0a59 cb 39            srl c
+0a5b 20 f1            jr nz,0x0a4e
+0a5d 05               dec b
+0a5e 05               dec b
+0a5f f8               ret m
+0a60 04               inc b
+0a61 18 ea            jr 0x0a4d
+
+
+// Display a source line at DE.
+
+0a63 1a               ld a,(de)
+0a64 6f               ld l,a
+0a65 13               inc de
+0a66 1a               ld a,(de)
+0a67 67               ld h,a
+0a68 13               inc de
+0a69 cd 6d 09         call 0x096d    // Display the line number HL
+0a6c c3 4f 09         jp 0x094f      // Print message at DE
+
+
+// Copy memory from DE through HL to BC.  (Forward)
+
+0a6f e7               rst 0x20
+0a70 c8               ret z
+0a71 1a               ld a,(de)
+0a72 02               ld (bc),a
+0a73 13               inc de
+0a74 03               inc bc
+0a75 18 f8            jr 0x0a6f
+
+
+// Copy memory DE through BC to HL.  Backwards, DE > BC.
+
+0a77 78               ld a,b
+0a78 92               sub d
+0a79 20 03            jr nz,0x0a7e
+0a7b 79               ld a,c
+0a7c 93               sub e
+0a7d c8               ret z
+0a7e 1b               dec de
+0a7f 2b               dec hl
+0a80 1a               ld a,(de)
+0a81 77               ld (hl),a
+0a82 18 f3            jr 0x0a77
+
+
+// Pop a BASIC stack frame
+
+0a84 c1               pop bc
+0a85 e1               pop hl
+0a86 22 a5 40         ld (0x40a5),hl
+0a89 7c               ld a,h
+0a8a b5               or l
+0a8b 28 10            jr z,0x0a9d
+0a8d e1               pop hl
+0a8e 22 91 40         ld (0x4091),hl
+0a91 e1               pop hl
+0a92 22 6e 40         ld (0x406e),hl
+0a95 e1               pop hl
+0a96 22 93 40         ld (0x4093),hl
+0a99 e1               pop hl
+0a9a 22 95 40         ld (0x4095),hl
+0a9d c5               push bc
+0a9e c9               ret
+
+
+// Push a BASIC stack frame, erroring out if there is not enough
+// space.
+
+0a9f 21 80 41         ld hl,0x4180
+0aa2 7c               ld a,h
+0aa3 2f               cpl
+0aa4 67               ld h,a
+0aa5 7d               ld a,l
+0aa6 2f               cpl
+0aa7 6f               ld l,a
+0aa8 23               inc hl            // HL = -0x4180
+0aa9 c1               pop bc            // Return address
+0aaa 39               add hl,sp
+0aab d2 f4 08         jp nc,0x08f4      // Sorry if no space
+0aae 2a a5 40         ld hl,(0x40a5)
+0ab1 7c               ld a,h
+0ab2 b5               or l
+0ab3 28 13            jr z,0x0ac8
+0ab5 2a 95 40         ld hl,(0x4095)
+0ab8 e5               push hl
+0ab9 2a 93 40         ld hl,(0x4093)
+0abc e5               push hl
+0abd 2a 6e 40         ld hl,(0x406e)
+0ac0 e5               push hl
+0ac1 2a 91 40         ld hl,(0x4091)
+0ac4 e5               push hl
+0ac5 2a a5 40         ld hl,(0x40a5)
+0ac8 e5               push hl
+0ac9 c5               push bc          // why not just jmp (BC)?
+0aca c9               ret
+
+// Prints character in A' to screen or cassette.
+
+0acb 28 19            jr z,0x0ae6      // Cassette off, print to screen
+0acd 08               ex af,af'
+0ace ed 5b 99 40      ld de,(0x4099)   // Add A to buffer
+0ad2 12               ld (de),a
+0ad3 13               inc de
+0ad4 ed 53 99 40      ld (0x4099),de
+0ad8 fe 0d            cp '\r'
+0ada d9               exx
+0adb c0               ret nz           // Return if line incomplete
+0adc d5               push de
+0add d9               exx
+0ade 21 ac 40         ld hl,0x40ac     // Start of buffer to write
+0ae1 cd 4b 0f         call 0x0f4b      // write HL:DE to cassette
+0ae4 d1               pop de
+0ae5 c9               ret
+
+
+// Print a character in A' to the screen
+
+0ae6 2a 68 40         ld hl,(0x4068)
+0ae9 08               ex af,af'
+0aea f5               push af
+0aeb fe 20            cp ' '
+0aed fa 11 0b         jp m,0x0b11       // Print a control code
+0af0 77               ld (hl),a
+0af1 23               inc hl
+0af2 7c               ld a,h
+0af3 fe 40            cp 0x40
+0af5 20 12            jr nz,0x0b09      // Scroll the screen
+0af7 11 00 3c         ld de,0x3c00
+0afa 21 40 3c         ld hl,0x3c40
+0afd 01 c0 03         ld bc,0x03c0
+0b00 ed b0            ldir
+0b02 eb               ex de,hl
+0b03 cd 37 0b         call 0x0b37
+0b06 21 c0 3f         ld hl,0x3fc0
+0b09 36 5f            ld (hl),0x5f      // Print cursor
+0b0b 22 68 40         ld (0x4068),hl
+0b0e f1               pop af
+0b0f d9               exx
+0b10 c9               ret
+
+// Handle printing a control code
+
+0b11 fe 0d            cp '\r'
+0b13 20 05            jr nz,0x0b1a
+0b15 cd 37 0b         call 0x0b37
+0b18 18 d8            jr 0x0af2
+
+0b1a fe 0c            cp 0x0c
+0b1c 20 10            jr nz,0x0b2e
+0b1e 21 00 3c         ld hl,0x3c00    // Clear screen
+0b21 cd 37 0b         call 0x0b37
+0b24 7c               ld a,h
+0b25 fe 40            cp 0x40
+0b27 20 f8            jr nz,0x0b21
+0b29 21 00 3c         ld hl,0x3c00    // Cursor to top of screen
+0b2c 18 db            jr 0x0b09
+
+0b2e fe 1d            cp 0x1d         // Delete
+0b30 20 d7            jr nz,0x0b09    // Ignore unknown control code
+0b32 36 20            ld (hl),0x20    // hide cursor
+0b34 2b               dec hl          // Back up one charactger
+0b35 18 d2            jr 0x0b09       // print cursor and exit
+
+
+// Clear the line on the screen pointed to by HL
+
+0b37 36 20            ld (hl),0x20
+0b39 23               inc hl
+0b3a 7d               ld a,l
+0b3b e6 3f            and 0x3f
+0b3d 20 f8            jr nz,0x0b37
+0b3f c9               ret
+
+
+// Get a key from the keyboard, echoing it to the screen
+// Returns with Z set if no key
+
+0b40 3a 7f 38         ld a,(0x387f)
+0b43 a7               and a
+0b44 c8               ret z           // No keys pressed
+0b45 d9               exx
+0b46 cd 55 0b         call 0x0b55     // Decode key from keyboard
+0b49 d9               exx
+0b4a d7               rst 0x10        // Print it
+0b4b a7               and a
+
+// Wait until key up
+
+0b4c f5               push af
+0b4d 3a 7f 38         ld a,(0x387f)
+0b50 a7               and a
+0b51 20 fa            jr nz,0x0b4d
+0b53 f1               pop af
+0b54 c9               ret
+
+// Decode/debounce keyboard
+
+0b55 06 ff            ld b,0xff
+0b57 10 fe            djnz 0x0b57      // debounce delay
+0b59 11 ac 0b         ld de,0x0bac
+0b5c 21 01 38         ld hl,0x3801
+0b5f 3e 00            ld a,0x00
+0b61 b6               or (hl)
+0b62 20 0a            jr nz,0x0b6e
+0b64 1c               inc e
+0b65 cb 25            sla l
+0b67 f2 61 0b         jp p,0x0b61
+0b6a d9               exx
+0b6b f1               pop af
+0b6c 18 d2            jr 0x0b40
+0b6e eb               ex de,hl
+0b6f 46               ld b,(hl)
+0b70 04               inc b
+0b71 cb 3f            srl a
+0b73 20 fb            jr nz,0x0b70
+0b75 78               ld a,b
+0b76 fe 40            cp 0x40
+0b78 30 17            jr nc,0x0b91
+0b7a fe 3c            cp 0x3c
+0b7c 30 21            jr nc,0x0b9f
+0b7e fe 30            cp 0x30
+0b80 30 16            jr nc,0x0b98
+
+0b82 21 b2 0b         ld hl,0x0bb2
+0b85 23               inc hl
+0b86 05               dec b
+0b87 20 fc            jr nz,0x0b85
+0b89 46               ld b,(hl)
+0b8a cd a5 0b         call 0x0ba5
+0b8d c0               ret nz
+0b8e e6 3f            and 0x3f
+0b90 c9               ret
+
+0b91 cd a5 0b         call 0x0ba5
+0b94 c8               ret z
+0b95 e6 3f            and 0x3f
+0b97 c9               ret
+
+0b98 cd a5 0b         call 0x0ba5
+0b9b c8               ret z
+0b9c e6 2f            and 0x2f
+0b9e c9               ret
+
+0b9f cd a5 0b         call 0x0ba5
+0ba2 c0               ret nz
+0ba3 18 f7            jr 0x0b9c
+
+0ba5 3a 80 38         ld a,(0x3880)       // Test shift key
+0ba8 a7               and a
+0ba9 78               ld a,b
+0baa c9               ret
+0bab c9               ret
+
+
+// Keyboard decode table
+
+0bac 3f               .db '?'      // char for bit 7 of 0x3820 ?
+0bad 47               .db 'G'      // char for bit 7 of 0x3801
+0bae 4f               .db 'O'      // char for bit 7 of 0x3802
+0baf 57               .db 'W'      // char for bit 7 of 0x3804
+0bb0 2f               .db '/'      // char for bit 7 of 0x3808
+0bb1 37               .db '7'      // char for bit 7 of 0x3810
+0bb2 00               .db 0
+
+// Keycodes for bits at 0x3840
+
+0bb3 0d               .db '\r'
+0bb4 0c               .db 0x0C     // Clear screen
+0bb5 03               .db 0x03     // Break (not control-C)
+0bb6 5b               .db 0x5b     // Up arrow
+0bb7 5c               .db 0x5c     // Down arrow
+0bb8 5d               .db 0x5d     // Left arrow
+0bb9 5e               .db 0x5e     // Right arrow
+0bba 20               .db ' '
+
+
+// Parse table for finding DATA statements during a READ statement.
+
+0bbb                  .db 'DATA'
+0bbf                  .dw 0x8749      // Found DATA statement
+0bc1                  .dw 0x874B      // DATA statement not found
+
+
+// Copy contents of four bytes pointed to by HL into FP stack and
+// unpack/push.
+
+0bc3 d5               push de
+0bc4 e5               push hl
+0bc5 f5               push af
+0bc6 01 04 00         ld bc,0x0004
+0bc9 dd e5            push ix
+0bcb d1               pop de
+0bcc ed b0            ldir
+0bce dd cb 02 16      rl (ix+2)
+0bd2 dd cb 03 16      rl (ix+3)
+0bd6 78               ld a,b
+0bd7 1f               rra
+0bd8 dd 77 04         ld (ix+4),a     // Unpack sign bit
+0bdb 37               scf
+0bdc dd cb 02 1e      rr (ix+2)       // Explicit 1 bit for mantissa.
+0be0 0e 05            ld c,0x05
+0be2 dd 09            add ix,bc
+0be4 f1               pop af
+0be5 e1               pop hl
+0be6 d1               pop de
+0be7 c9               ret
+
+
+// Assign value to variable, address is on the stack.  Converts the
+// five byte format to the four-byte format.  The sign bit goes to the
+// top bit of the exponent, and the top mantissa bit is implicitly one
+// instead of explicitly.  Also pops the FP stack.
+
+0be8 e1               pop hl            // Target address.
+0be9 01 fb ff         ld bc,0xfffb      // -5
+0bec dd 09            add ix,bc
+0bee 01 04 00         ld bc,0x0004
+0bf1 d5               push de
+0bf2 e5               push hl
+0bf3 eb               ex de,hl
+0bf4 dd e5            push ix
+0bf6 e1               pop hl
+0bf7 ed b0            ldir
+0bf9 eb               ex de,hl
+0bfa 2b               dec hl
+0bfb 2b               dec hl
+0bfc cb 16            rl (hl)
+0bfe 23               inc hl
+0bff dd 7e 04         ld a,(ix+4)
+0c02 17               rla
+0c03 cb 1e            rr (hl)
+0c05 2b               dec hl
+0c06 cb 1e            rr (hl)
+0c08 e1               pop hl
+0c09 d1               pop de
+0c0a c9               ret
+
+
+// Convert float to integer.  Returns result in HL.
+
+0c0b d9               exx
+0c0c 01 fb ff         ld bc,0xfffb
+0c0f dd 09            add ix,bc
+0c11 11 00 00         ld de,0x0000    // Zero in case we have to return zero
+0c14 dd 7e 03         ld a,(ix+3)     // Exponent
+0c17 dd 4e 04         ld c,(ix+4)     // Sign
+0c1a fe 80            cp 0x80
+0c1c 28 34            jr z,0x0c52     // Equal to zero
+0c1e fe 01            cp 0x01
+0c20 fa 2c 0c         jp m,0x0c2c     // Smaller than two, shift 
+0c23 fe 10            cp 0x10
+0c25 fa 30 0c         jp m,0x0c30     // Jump if smaller than 2^16
+0c28 d9               exx
+0c29 c3 a2 01         jp 0x01a2       // Throw HOW
+
+
+0c2c 3e ff            ld a,0xff
+0c2e 18 16            jr 0x0c46
+
+// Shift a small FP number into the right position.
+
+0c30 47               ld b,a
+0c31 dd 7e 00         ld a,(ix+0)      // LSB
+0c34 dd 6e 01         ld l,(ix+1)      // Middle
+0c37 dd 66 02         ld h,(ix+2)      // MSB
+0c3a cb 27            sla a
+0c3c cb 15            rl l
+0c3e cb 14            rl h
+0c40 cb 13            rl e
+0c42 cb 12            rl d
+0c44 10 f4            djnz 0x0c3a      // Shift value into DE
+0c46 cb 21            sla c
+0c48 30 08            jr nc,0x0c52     // Jump if don't have to round up
+0c4a b4               or h
+0c4b b5               or l
+0c4c 28 01            jr z,0x0c4f      // Don't round up if zero.
+0c4e 13               inc de
+0c4f cd 78 0c         call 0x0c78      // Negate DE
+0c52 d5               push de
+0c53 d9               exx
+0c54 e1               pop hl
+0c55 c9               ret
+
+// Push 10.0 to the FP stack
+
+0c56 21 0a 00         ld hl,0x000a
+
+// Convert HL to FP stack
+
+0c59 d5               push de
+0c5a eb               ex de,hl
+0c5b 01 0a 00         ld bc,0x000a    //  Push two floats??
+0c5e dd 09            add ix,bc
+0c60 cd 75 0c         call 0x0c75
+0c63 d5               push de
+0c64 26 00            ld h,0x00
+0c66 cb 1c            rr h            // Top bit of H is sign bit
+0c68 2e 10            ld l,0x10       // L is exponent (16)
+0c6a d9               exx
+0c6b d1               pop de
+0c6c 2e 00            ld l,0x00
+0c6e 63               ld h,e
+0c6f 4a               ld c,d          // Mantissa=C:H:L Exponent=L' Sign bit=H'
+0c70 cd 00 0e         call 0x0e00     // Normalize
+0c73 18 2f            jr 0x0ca4       // Move registers to float stack
+
+// if DE >= 0, return with carry = 0.
+// else set DE = -DE with carry set.
+
+0c75 af               xor a
+0c76 82               add a,d
+0c77 f0               ret p           // Return if D >= 0
+
+0c78 7b               ld a,e
+0c79 ed 44            neg
+0c7b 5f               ld e,a
+0c7c 7a               ld a,d
+0c7d 2f               cpl
+0c7e 3f               ccf
+0c7f ce 00            adc a,0x00
+0c81 57               ld d,a
+0c82 37               scf
+0c83 c9               ret
+
+// FP Mult by 10.0
+
+0c84 cd 56 0c         call 0x0c56
+
+// FP Mult?
+
+0c87 cd 1e 0e         call 0x0e1e     // Load fp stack to C':H':L',  B':D':E'
+0c8a 28 3e            jr z,0x0cca
+0c8c bb               cp e
+0c8d ca 0d 0d         jp z,0x0d0d     // Store regs and pop
+0c90 cd 27 0d         call 0x0d27
+0c93 18 0f            jr 0x0ca4
+
+// FP division by 10.0
+
+0c95 cd 56 0c         call 0x0c56
+
+// FP Division?
+
+0c98 cd 1e 0e         call 0x0e1e     // Load two fp values
+0c9b 28 2d            jr z,0x0cca
+0c9d bb               cp e
+0c9e ca a3 01         jp z,0x01a3     // Throw HOW- div by zero?
+0ca1 cd 5c 0d         call 0x0d5c
+0ca4 18 69            jr 0x0d0f       // Store regs and pop
+
+0ca6 cd c3 0b         call 0x0bc3
+0ca9 cd 1e 0e         call 0x0e1e
+0cac 01 fb ff         ld bc,0xfffb
+0caf 18 06            jr 0x0cb7
+
+0cb1 cd 1e 0e         call 0x0e1e
+0cb4 01 f6 ff         ld bc,0xfff6
+0cb7 dd 09            add ix,bc
+0cb9 bd               cp l
+0cba cd 94 0d         call 0x0d94
+0cbd d1               pop de
+0cbe c9               ret
+
+
+// Floating point subtraction?
+
+0cbf cd 1e 0e         call 0x0e1e      // Unpack values
+0cc2 20 05            jr nz,0x0cc9    
+0cc4 cd 03 0d         call 0x0d03      // Store regs to FP stack
+0cc7 18 30            jr 0x0cf9        // Flip sign
+
+0cc9 bb               cp e
+0cca 28 54            jr z,0x0d20      // Computing x - 0, pop the zero
+0ccc aa               xor d
+0ccd 57               ld d,a
+0cce 18 0b            jr 0x0cdb        // Use addition code.
+
+// Add (HL) to current
+
+0cd0 cd c3 0b         call 0x0bc3     // Unpack (HL) to FP stack
+
+// FP Addition
+
+0cd3 cd 1e 0e         call 0x0e1e    // Unpack regs
+0cd6 28 2c            jr z,0x0d04    // Adding zero
+0cd8 bb               cp e
+0cd9 28 45            jr z,0x0d20    // FP-1 == 0.0, just pop it.
+
+0cdb cd b3 0d         call 0x0db3    // Compare args
+0cde 28 0e            jr z,0x0cee
+0ce0 30 07            jr nc,0x0ce9
+0ce2 eb               ex de,hl
+0ce3 d9               exx
+0ce4 eb               ex de,hl
+0ce5 79               ld a,c
+0ce6 48               ld c,b
+0ce7 47               ld b,a
+0ce8 d9               exx
+
+0ce9 cd cb 0d         call 0x0dcb
+0cec 18 21            jr 0x0d0f
+
+0cee 7c               ld a,h
+0cef aa               xor d
+0cf0 20 1b            jr nz,0x0d0d
+0cf2 1e 01            ld e,0x01
+0cf4 cd f3 0d         call 0x0df3
+0cf7 18 16            jr 0x0d0f
+
+
+// Flip sign of FP number below stack, pop the saved DE.
+
+0cf9 dd 7e ff         ld a,(ix-1)
+0cfc ee 80            xor 0x80
+0cfe dd 77 ff         ld (ix-1),a
+0d01 d1               pop de
+0d02 c9               ret
+
+
+// Store regs B':D':E'   and D (sign), E (exponent)
+// to FP stack-1
+
+0d03 d5               push de
+0d04 62               ld h,d
+0d05 6b               ld l,e
+0d06 d9               exx
+0d07 6b               ld l,e
+0d08 62               ld h,d
+0d09 48               ld c,b
+0d0a d9               exx
+0d0b 18 02            jr 0x0d0f
+
+0d0d 2e 80            ld l,0x80        // min exponent? or zero exponent?
+
+// Store regs H, L and C':H':L' to FP stack-1
+
+0d0f dd 74 fa         ld (ix-6),h      // Sign bit (7)
+0d12 dd 75 f9         ld (ix-7),l      // Exponent
+0d15 d9               exx
+0d16 dd 75 f6         ld (ix-10),l     // Mantissa LSB
+0d19 dd 74 f7         ld (ix-9),h      // Mantissa middle B
+0d1c dd 71 f8         ld (ix-8),c      // Mantissa MSB
+0d1f d9               exx
+
+// Pop floating point stack
+
+0d20 01 fb ff         ld bc,0xfffb
+0d23 dd 09            add ix,bc
+0d25 d1               pop de
+0d26 c9               ret
+
+
+// FP Multiplication code.  Regs are:
+//    FP-2  is in   C':H':L'  Sign=H  Exponent=L
+//    FP-1  is in   B':D':E'  Sign=D  Exponent=E
+
+
+0d27 7c               ld a,h
+0d28 aa               xor d
+0d29 67               ld h,a          // H = sign bit of product
+0d2a 1d               dec e
+0d2b e5               push hl
+0d2c c5               push bc
+0d2d 06 18            ld b,0x18       //  Bits to shift/add
+0d2f dd 6e f6         ld l,(ix-10)    //  C:H:L = FP-2 mantissa
+0d32 dd 66 f7         ld h,(ix-9)
+0d35 dd 4e f8         ld c,(ix-8)
+0d38 d9               exx
+0d39 af               xor a
+0d3a 6f               ld l,a
+0d3b 67               ld h,a
+0d3c 4f               ld c,a          // Zero C':H':L'
+0d3d d9               exx
+0d3e cb 39            srl c
+0d40 cb 1c            rr h
+0d42 cb 1d            rr l            // Shift C:H:L to the right + carry
+0d44 d9               exx
+0d45 30 04            jr nc,0x0d4b    // No addition necessary
+0d47 19               add hl,de
+0d48 79               ld a,c
+0d49 88               adc a,b
+0d4a 4f               ld c,a          //  C':H':L' += A:D:E
+0d4b d9               exx
+0d4c 10 05            djnz 0x0d53     // Go to helper
+0d4e c1               pop bc          // Done with product
+0d4f e1               pop hl
+0d50 d9               exx
+0d51 18 30            jr 0x0d83     // Exponent code in addition code somehow
+
+0d53 d9               exx       // shift C:H:L right
+0d54 cb 19            rr c
+0d56 cb 1c            rr h
+0d58 cb 1d            rr l
+0d5a 18 e1            jr 0x0d3d
+
+// Do fp division
+
+0d5c 7b               ld a,e
+0d5d ed 44            neg
+0d5f 5f               ld e,a
+0d60 7c               ld a,h
+0d61 aa               xor d
+0d62 67               ld h,a
+0d63 e5               push hl
+0d64 c5               push bc
+0d65 06 19            ld b,0x19
+0d67 d9               exx
+0d68 ed 52            sbc hl,de
+0d6a 79               ld a,c
+0d6b 98               sbc a,b
+0d6c 4f               ld c,a
+0d6d 30 03            jr nc,0x0d72
+0d6f 19               add hl,de
+0d70 88               adc a,b
+0d71 4f               ld c,a
+0d72 d9               exx
+0d73 3f               ccf
+0d74 ed 6a            adc hl,hl
+0d76 cb 11            rl c
+0d78 10 0b            djnz 0x0d85
+0d7a e5               push hl
+0d7b c5               push bc
+0d7c d9               exx
+0d7d c1               pop bc
+0d7e e1               pop hl
+0d7f d9               exx
+0d80 c1               pop bc
+0d81 e1               pop hl
+0d82 d9               exx
+0d83 18 64            jr 0x0de9
+
+
+0d85 d9               exx
+0d86 29               add hl,hl
+0d87 cb 11            rl c
+0d89 30 dd            jr nc,0x0d68
+0d8b 3f               ccf
+0d8c ed 52            sbc hl,de
+0d8e 79               ld a,c
+0d8f 98               sbc a,b
+0d90 4f               ld c,a
+0d91 b7               or a
+0d92 18 de            jr 0x0d72
+
+0d94 28 0a            jr z,0x0da0
+0d96 bb               cp e
+0d97 28 0f            jr z,0x0da8
+0d99 7c               ld a,h
+0d9a aa               xor d
+0d9b cc b3 0d         call z,0x0db3
+0d9e 18 07            jr 0x0da7
+
+0da0 bb               cp e
+0da1 c8               ret z
+0da2 37               scf
+0da3 cb 7a            bit 7,d
+0da5 18 03            jr 0x0daa
+
+0da7 c8               ret z
+0da8 cb 7c            bit 7,h
+0daa 20 05            jr nz,0x0db1
+0dac 1f               rra
+0dad 37               scf
+0dae cb 17            rl a
+0db0 c9               ret
+
+0db1 3f               ccf
+0db2 c9               ret
+
+// FP addition helper.  Compares exponents, then mantissas if equal.
+
+0db3 7d               ld a,l
+0db4 93               sub e
+0db5 28 07            jr z,0x0dbe      // Compare mantissas now
+0db7 e2 bc 0d         jp po,0x0dbc
+0dba ed 44            neg
+0dbc 07               rlca
+0dbd c9               ret
+
+// Compare mantissas,
+// C':H':L' to B':D':E', result in flags
+
+0dbe d9               exx
+0dbf 79               ld a,c
+0dc0 b8               cp b
+0dc1 20 06            jr nz,0x0dc9
+0dc3 7c               ld a,h
+0dc4 ba               cp d
+0dc5 20 02            jr nz,0x0dc9
+0dc7 7d               ld a,l
+0dc8 bb               cp e
+0dc9 d9               exx
+0dca c9               ret
+
+
+// Core FP add. 
+
+0dcb 7d               ld a,l        // L-E = left shifts to make exponents same
+0dcc 93               sub e
+0dcd 28 0e            jr z,0x0ddd   // Already the same to start with
+0dcf fe 18            cp 0x18
+0dd1 d0               ret nc        // Return if total precision loss
+0dd2 d9               exx
+0dd3 cb 38            srl b         // Shift B':D':E' left one bit
+0dd5 cb 1a            rr d
+0dd7 cb 1b            rr e
+0dd9 3d               dec a
+0dda 20 f7            jr nz,0x0dd3
+0ddc d9               exx
+
+0ddd 1e 00            ld e,0x00     // Can use E for something else now.
+0ddf 7c               ld a,h
+0de0 aa               xor d
+0de1 fa fa 0d         jp m,0x0dfa   // Have to get tricky, use sub for add here.
+0de4 d9               exx
+0de5 19               add hl,de     // Can use 16-bit addition
+0de6 79               ld a,c
+0de7 88               adc a,b
+0de8 4f               ld c,a        // Followed by 8-bit
+0de9 30 07            jr nc,0x0df2  // Jump if don't have to shift right
+0deb cb 19            rr c
+0ded cb 1c            rr h
+0def cb 1d            rr l          // Shift C':H':L' right one bit
+0df1 37               scf
+0df2 d9               exx
+0df3 7d               ld a,l
+0df4 8b               adc a,e       // Add carry bit, since E=0
+0df5 ea 15 0e         jp pe,0x0e15  // Test overflow
+0df8 6f               ld l,a
+0df9 c9               ret
+0dfa d9               exx
+
+0dfb ed 52            sbc hl,de
+0dfd 79               ld a,c
+0dfe 98               sbc a,b
+0dff 4f               ld c,a
+
+// Normalize a float.   C:H:L is mantissa, L' is exponent, H' sign
+// Exits with registers swapped...
+
+0e00 06 18            ld b,0x18      // Shift at most 24 times
+0e02 af               xor a          // (negative) count of left shifts
+0e03 0c               inc c
+0e04 0d               dec c
+0e05 fa 11 0e         jp m,0x0e11    // Jump if high bit of C set
+0e08 3d               dec a          // Bump count
+0e09 29               add hl,hl      // Shift C:H:L left one bit
+0e0a cb 11            rl c
+0e0c 10 f7            djnz 0x0e05
+0e0e 2e 80            ld l,0x80      // Small number after normalization fails?
+0e10 c9               ret
+0e11 d9               exx
+0e12 85               add a,l        // Update exponent (L')
+0e13 18 e0            jr 0x0df5
+
+0e15 7c               ld a,h
+0e16 b7               or a
+0e17 fa 0e 0e         jp m,0x0e0e    // Underflow to zero?
+0e1a f1               pop af         // Pop return address?
+0e1b c3 a3 01         jp 0x01a3      // Throw HOW
+
+
+// Load pair of FP numbers into registers.  On exit:
+//    Z flag set if FP-2 is zero.
+//    Original DE is saved to the stack after return
+//
+//    FP-2  is in   C':H':L'  Sign=H  Exponent=L
+//    FP-1  is in   B':D':E'  Sign=D  Exponent=E
+
+0e1e e1               pop hl      // pop return address
+0e1f d5               push de     // Save DE
+0e20 e5               push hl
+0e21 dd 56 ff         ld d,(ix-1)     // Sign bit
+0e24 dd 5e fe         ld e,(ix-2)     // Exponent
+0e27 d9               exx
+0e28 dd 5e fb         ld e,(ix-5)     // LSB
+0e2b dd 56 fc         ld d,(ix-4)     // middle
+0e2e dd 46 fd         ld b,(ix-3)     // MSB
+0e31 d9               exx
+0e32 dd 66 fa         ld h,(ix-6)     // Sign
+0e35 dd 6e f9         ld l,(ix-7)     // Exponent
+0e38 d9               exx
+0e39 dd 6e f6         ld l,(ix-10)    // LSB
+0e3c dd 66 f7         ld h,(ix-9)     // Middle
+0e3f dd 4e f8         ld c,(ix-8)     // MSB
+0e42 d9               exx
+0e43 3e 80            ld a,0x80
+0e45 bd               cp l
+0e46 c9               ret
+
+// RND entry point
+
+0e47 cd 14 08         call 0x0814
+0e4a 7c               ld a,h
+0e4b b5               or l
+0e4c ca 64 0e         jp z,0x0e64      // Jump for RND(0)
+0e4f cb 7c            bit 7,h
+0e51 c2 a2 01         jp nz,0x01a2     // Throw how if HL negative
+0e54 cd 59 0c         call 0x0c59      // Convert HL to FP stack
+0e57 cd 64 0e         call 0x0e64      // Push RND(0)
+0e5a cd 87 0c         call 0x0c87      // FP Multiply
+0e5d cd 0b 0c         call 0x0c0b      // Convert FP tos to HL
+0e60 23               inc hl
+0e61 c3 59 0c         jp 0x0c59        // Convert HL to FP Stack
+
+// Core RNG, leaves value from 0.0 to 1.0 on FP stack
+// Looks like a linear congruential system
+
+0e64 d5               push de
+0e65 d9               exx
+0e66 21 a7 40         ld hl,0x40a7     // Load RNG state into B':D':E'
+0e69 5e               ld e,(hl)
+0e6a 23               inc hl
+0e6b 56               ld d,(hl)
+0e6c 23               inc hl
+0e6d 46               ld b,(hl)
+0e6e d9               exx
+0e6f cd 55 01         call 0x0155      // Zero C':H':L'
+0e72 21 b2 0e         ld hl,0x0eb2
+0e75 0e 03            ld c,0x03
+0e77 06 08            ld b,0x08
+0e79 56               ld d,(hl)
+0e7a d9               exx              //  Shift C':H':L' left one bit
+0e7b 29               add hl,hl
+0e7c cb 11            rl c
+0e7e d9               exx
+0e7f cb 12            rl d
+0e81 30 06            jr nc,0x0e89
+0e83 d9               exx
+0e84 19               add hl,de       // C':H':L' += B':D':E'
+0e85 79               ld a,c
+0e86 88               adc a,b
+0e87 4f               ld c,a
+0e88 d9               exx
+0e89 10 ef            djnz 0x0e7a
+
+0e8b 23               inc hl
+0e8c 0d               dec c
+0e8d 20 e8            jr nz,0x0e77
+0e8f 21 00 00         ld hl,0x0000
+0e92 d9               exx
+
+0e93 11 a7 40         ld de,0x40a7    // Update RNG state
+0e96 7d               ld a,l
+0e97 c6 65            add a,0x65
+0e99 12               ld (de),a
+0e9a 13               inc de
+0e9b 6f               ld l,a
+0e9c 7c               ld a,h
+0e9d ce b0            adc a,0xb0
+0e9f 12               ld (de),a
+0ea0 13               inc de
+0ea1 67               ld h,a
+0ea2 79               ld a,c
+0ea3 ce 05            adc a,0x05
+0ea5 12               ld (de),a
+0ea6 4f               ld c,a
+
+0ea7 cd 00 0e         call 0x0e00   // Treat C:H:L as a float to normalize
+0eaa 01 0a 00         ld bc,0x000a
+0ead dd 09            add ix,bc     // Pop float stack
+0eaf c3 0f 0d         jp 0x0d0f     // Store regs to FP stack
+
+// RNG multiplier
+
+0eb2                  .db  0x40, 0xe7, 0x4d
+
+// FP Constants for FP printing subroutine
+
+0eb5                  .db  0x00, 0x00, 0x80, 0x80
+0eb9                  .db  0xcc, 0xcc, 0xcc, 0x7e
+
+// Parse an integer, requiring digits.
+
+0ebd cd c4 0e         call 0x0ec4
+0ec0 c0               ret nz
+0ec1 c3 c9 08         jp 0x08c9    // Throw a WHAT
+
+
+// Parse an integer.  Returns digits in A, value in HL.
+// Z set if no digits were found.
+
+0ec4 cd 55 01         call 0x0155
+0ec7 21 00 00         ld hl,0x0000
+0eca 45               ld b,l
+0ecb ef               rst 0x28
+0ecc cd 8c 00         call 0x008c       // See if (DE) is a digit
+0ecf 38 09            jr c,0x0eda
+0ed1 04               inc b
+0ed2 cd 5e 01         call 0x015e       // add A to 10*(BC':HL')
+0ed5 30 f5            jr nc,0x0ecc      // No overflow
+0ed7 c3 a2 01         jp 0x01a2         // Deal with overflow
+
+// Number being parsed is complete, limit to 32767.
+
+0eda d9               exx
+0edb e5               push hl
+0edc 79               ld a,c
+0edd cb 7c            bit 7,h
+0edf d9               exx
+0ee0 e1               pop hl
+0ee1 20 f4            jr nz,0x0ed7     // Overflow
+0ee3 a7               and a
+0ee4 20 f1            jr nz,0x0ed7     // Overflow
+0ee6 78               ld a,b
+0ee7 a7               and a
+0ee8 c9               ret
+
+// CLOAD entry point
+
+0ee9 cd f4 0e         call 0x0ef4      // Read flie header
+0eec 22 6c 40         ld (0x406c),hl
+0eef 20 d0            jr nz,0x0ec1
+0ef1 c3 c9 01         jp 0x01c9
+
+// Start cassette motor, read data header.
+
+0ef4 cd e9 0f         call 0x0fe9
+0ef7 d5               push de
+0ef8 af               xor a
+0ef9 cd 81 0f         call 0x0f81      // Read and shift bits into A
+0efc fe a5            cp 0xa5
+0efe 20 f9            jr nz,0x0ef9     // Until we get the sync byte 0xA5
+
+0f00 3e 2a            ld a,0x2a        // Load status indicators
+0f02 32 00 3c         ld (0x3c00),a
+0f05 32 01 3c         ld (0x3c01),a
+
+0f08 cd a1 0f         call 0x0fa1      // DE = address to load at
+0f0b 57               ld d,a
+0f0c cd a1 0f         call 0x0fa1
+0f0f 5f               ld e,a
+
+0f10 cd a1 0f         call 0x0fa1      // HL = End address
+0f13 67               ld h,a
+0f14 cd a1 0f         call 0x0fa1
+0f17 6f               ld l,a
+0f18 0e 00            ld c,0x00        // C = checksum
+
+0f1a cd a1 0f         call 0x0fa1      // Top of load loop
+0f1d 12               ld (de),a
+0f1e 13               inc de
+0f1f fe 0d            cp '\r'          // Flash asterisk on CR
+0f21 20 0a            jr nz,0x0f2d
+0f23 f5               push af
+0f24 3a 01 3c         ld a,(0x3c01)
+0f27 ee 0a            xor (' ' ^ '*')
+0f29 32 01 3c         ld (0x3c01),a
+0f2c f1               pop af
+
+0f2d 81               add a,c         // Update checksum
+0f2e 4f               ld c,a
+0f2f e7               rst 0x20
+0f30 30 e8            jr nc,0x0f1a
+0f32 e5               push hl
+0f33 cd e4 0f         call 0x0fe4     // Stop cassette motor
+0f36 e1               pop hl
+0f37 d1               pop de
+0f38 79               ld a,c
+0f39 a7               and a
+0f3a c9               ret
+
+// CSAVE entry point
+
+0f3b cd e9 0f         call 0x0fe9     // Start cassette motor
+0f3e 21 00 42         ld hl,0x4200    // Beginning of range to write
+0f41 ed 5b 6c 40      ld de,(0x406c)  // End of range is top of used memory
+0f45 cd 4b 0f         call 0x0f4b     // Write it
+0f48 c3 c9 01         jp 0x01c9       // Main ready entry
+
+// Write a chunk of memory to cassette.
+// Write a header of 128 0x0 bytes
+
+0f4b 3e 80            ld a,0x80
+0f4d c5               push bc
+0f4e 08               ex af,af'
+0f4f af               xor a
+0f50 cd a9 0f         call 0x0fa9      // Write A to cassette
+0f53 08               ex af,af'
+0f54 3d               dec a
+0f55 20 f7            jr nz,0x0f4e
+
+// Write 0xA5 header byte
+
+0f57 3e a5            ld a,0xa5
+0f59 cd a9 0f         call 0x0fa9
+
+// Write HL:DE, then the range of bytes from HL to DE.
+
+0f5c 7c               ld a,h
+0f5d cd a9 0f         call 0x0fa9
+0f60 7d               ld a,l
+0f61 cd a9 0f         call 0x0fa9
+0f64 c1               pop bc
+0f65 7a               ld a,d
+0f66 cd a9 0f         call 0x0fa9
+0f69 7b               ld a,e
+0f6a cd a9 0f         call 0x0fa9
+0f6d 0e 00            ld c,0x00
+0f6f 7e               ld a,(hl)
+0f70 cd a9 0f         call 0x0fa9
+0f73 23               inc hl
+0f74 e7               rst 0x20
+0f75 20 f8            jr nz,0x0f6f
+0f77 79               ld a,c
+0f78 ed 44            neg             // Checksum
+0f7a cd a9 0f         call 0x0fa9
+0f7d cd e4 0f         call 0x0fe4
+0f80 c9               ret
+
+// Read one bit from the cassette, shift it into A.
+
+0f81 d9               exx
+0f82 08               ex af,af'
+0f83 db ff            in a,(0xff)
+0f85 17               rla
+0f86 30 fb            jr nc,0x0f83
+0f88 06 7c            ld b,0x7c
+0f8a 10 fe            djnz 0x0f8a
+0f8c cd f0 0f         call 0x0ff0
+0f8f 06 f8            ld b,0xf8
+0f91 10 fe            djnz 0x0f91
+0f93 db ff            in a,(0xff)
+0f95 47               ld b,a
+0f96 08               ex af,af'
+0f97 cb 10            rl b
+0f99 17               rla
+0f9a f5               push af
+0f9b cd f0 0f         call 0x0ff0
+0f9e f1               pop af
+0f9f d9               exx
+0fa0 c9               ret
+
+// Read 8 bits from the cassette, returned in A.
+
+0fa1 06 08            ld b,0x08
+0fa3 cd 81 0f         call 0x0f81
+0fa6 10 fb            djnz 0x0fa3
+0fa8 c9               ret
+
+// Write a byte to the cassette
+
+0fa9 d9               exx
+0faa 0e 08            ld c,0x08
+0fac 57               ld d,a
+0fad cd c5 0f         call 0x0fc5
+0fb0 cb 02            rlc d
+0fb2 30 0b            jr nc,0x0fbf
+0fb4 cd c5 0f         call 0x0fc5
+0fb7 0d               dec c
+0fb8 20 f3            jr nz,0x0fad
+0fba 7a               ld a,d
+0fbb d9               exx
+0fbc 81               add a,c
+0fbd 4f               ld c,a
+0fbe c9               ret
+
+0fbf 06 00            ld b,0x00
+0fc1 10 fe            djnz 0x0fc1
+0fc3 18 f2            jr 0x0fb7
+
+// Write a bit to the cassette
+
+0fc5 21 01 fc         ld hl,0xfc01
+0fc8 cd f3 0f         call 0x0ff3
+0fcb 06 0a            ld b,0x0a
+0fcd 10 fe            djnz 0x0fcd
+0fcf 21 02 fc         ld hl,0xfc02
+0fd2 cd f3 0f         call 0x0ff3
+0fd5 06 0a            ld b,0x0a
+0fd7 10 fe            djnz 0x0fd7
+0fd9 21 00 fc         ld hl,0xfc00
+0fdc cd f3 0f         call 0x0ff3
+0fdf 06 da            ld b,0xda
+0fe1 10 fe            djnz 0x0fe1
+0fe3 c9               ret
+
+
+// Turn off cassette motor
+
+0fe4 21 00 fb         ld hl,0xfb00
+0fe7 18 0a            jr 0x0ff3
+
+
+// Turn on cassette motor
+
+0fe9 21 04 ff         ld hl,0xff04
+0fec cd f3 0f         call 0x0ff3
+0fef c9               ret
+
+// Poll state of cassette motor/input bit
+
+0ff0 21 00 ff         ld hl,0xff00
+
+// Common code for manipulating cassette motor
+
+0ff3 3a 90 40         ld a,(0x4090)
+0ff6 a4               and h
+0ff7 b5               or l
+0ff8 d3 ff            out (0xff),a
+0ffa 32 90 40         ld (0x4090),a
+0ffd cb 57            bit 2,a          // Test cassette motor status
+0fff c9               ret
+
+
+.end
+

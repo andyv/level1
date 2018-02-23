@@ -1,0 +1,56 @@
+
+
+RAM memory map:
+
+3C00    Start of screen memory
+3FFF    End of screen memory
+
+4000    A value
+4004    B value
+4008    C value
+...
+4064    Z value
+
+4068    Pointer to cursor position
+406a    Points to top of physical memory
+406c    Pointer to top of used memory
+406e    Current FOR end value
+
+4070    A$ Value (16 bytes)
+4080    B$ Value (16 bytes)
+
+4090    Cassette port status cache (byte)
+4091    Current FOR step value
+4093    pointer to top of current FOR statement
+4095    pointer to current FOR statemnt?
+4097    Save for pointer to current line
+4099    pointer to print buffer 
+409b    pointer to NEXT variable
+409d    Parse pointer saved at a STOP
+409f    pointer to current line being executed
+40a1    READ pointer
+40a3    Saved SP for this BASIC frame
+40a5    pointer to current FOR variable
+40a7    Three bytes of RNG state
+40aa    ??
+
+40ac    Buffer for command input, print output to cassette
+40f3    End of buffer
+
+40f4    Bottom of floating point stack
+
+Floating point stack format, five byte entries:
+
+   ix+0   Mantissa LSB
+   ix+1   Mantissa Middle
+   ix+2   Mantissa MSB (high bit set)
+   ix+3   Exponent.  0x80 indicates Zero.
+   ix+4   Sign bit in bit 7.
+
+4180    Bottom of system stack pointer
+
+4200    Top of system stack pointer
+
+BASIC program stored here as \r terminated lines that begin with the
+16-bit line number.
+
